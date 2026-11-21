@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cobros clínicos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Cobros clínicos</h1>
+            <p>Conceptos pendientes de atención veterinaria.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Consultar atención</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>ID de consulta clínica</label>
+                    <input id="consultationId" type="number" min="1">
+                </div>
+
+            </div>
+
+            <div class="actions">
+                <button id="searchButton">Consultar conceptos</button>
+            </div>
+
+            <p id="searchMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Conceptos pendientes</h3>
+
+            <div class="table-wrap">
+                <table id="chargesTable"></table>
+            </div>
+
+            <p id="total" class="summary">Total seleccionado: S/ 0.00</p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Registrar cobro</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Cliente</label>
+                    <select id="customerId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Método de pago</label>
+                    <select id="paymentMethodId"></select>
+                </div>
+
+            </div>
+
+            <div class="actions">
+                <button id="paymentButton">Confirmar cobro</button>
+            </div>
+
+            <p id="paymentMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let charges = [];
+    let operationKey = Sisvet.operationKey();
+
+    async function loadOptions() {
+
+        try {
+
+            const [customers, methods] = await Promise.all([
+                Sisvet.api("/api/customers"),
+                Sisvet.api("/api/payment-methods")
+            ]);
+
+            const customerSelect = document.getElementById("customerId");
+            const paymentSelect = document.getElementById("paymentMethodId");
+
+            customerSelect.replaceChildren();
+            paymentSelect.replaceChildren();
+
+            for (const customer of customers) {
+                customerSelect.add(new Option(customer.fullName, customer.id));
+            }
+
+            for (const method of methods) {
+                paymentSelect.add(new Option(method.name, method.id));
+            }
+
+        } catch (error) {
+            Sisvet.showError("paymentMessage", error);
+        }
+    }
+
+    function selectedChargeIds() {
+
+        return Array.from(document.querySelectorAll(".charge-checkbox:checked"))
+                .map(input => Number(input.value));
+    }
+
+    function updateTotal() {
+
+        const selected = new Set(selectedChargeIds());
+
+        const total = charges
+                .filter(charge => selected.has(charge.id))
+                .reduce((sum, charge) => sum + Number(charge.amount), 0);
+
+        document.getElementById("total").textContent =
+            "Total seleccionado: " + Sisvet.money(total);
+    }
+
+    function renderCharges() {
+
+        const table = document.getElementById("chargesTable");
+
+        table.replaceChildren();
+
+        const thead = document.createElement("thead");
+        const header = document.createElement("tr");
+
+        for (const name of ["Seleccionar", "ID", "Concepto", "Importe"]) {
+
+            const th = document.createElement("th");
+            th.textContent = name;
+            header.appendChild(th);
+        }
+
+        thead.appendChild(header);
+
+        const tbody = document.createElement("tbody");
+
+        for (const charge of charges) {
+
+            const row = document.createElement("tr");
+            const checkCell = document.createElement("td");
+
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.className = "charge-checkbox";
+            checkbox.value = charge.id;
+
+            checkbox.addEventListener("change", updateTotal);
+            checkCell.appendChild(checkbox);
+
+            const idCell = document.createElement("td");
+            idCell.textContent = charge.id;
+
+            const descriptionCell = document.createElement("td");
+            descriptionCell.textContent = charge.description;
+
+            const amountCell = document.createElement("td");
+            amountCell.textContent = Sisvet.money(charge.amount);
+
+            row.append(checkCell, idCell, descriptionCell, amountCell);
+            tbody.appendChild(row);
+        }
+
+        table.append(thead, tbody);
+        updateTotal();
+    }
+
+    async function loadCharges() {
+
+        const consultationId = Number(document.getElementById("consultationId").value);
+
+        if (!consultationId) {
+            Sisvet.message("searchMessage", "Indica una consulta válida.", true);
+            return;
+        }
+
+        try {
+
+            charges = await Sisvet.api(
+                "/api/clinical-billing/consultations/" + consultationId + "/charges"
+            );
+
+            renderCharges();
+
+            Sisvet.message("searchMessage", charges.length + " conceptos pendientes.");
+
+        } catch (error) {
+            Sisvet.showError("searchMessage", error);
+        }
+    }
+
+    document.getElementById("searchButton").addEventListener("click", loadCharges);
+
+    document.getElementById("paymentButton").addEventListener("click", async () => {
+
+        const chargeIds = selectedChargeIds();
+
+        if (chargeIds.length === 0) {
+            Sisvet.message("paymentMessage", "Selecciona al menos un concepto.", true);
+            return;
+        }
+
+        const request = {
+            consultationId: Number(document.getElementById("consultationId").value),
+            customerId: Number(document.getElementById("customerId").value),
+            paymentMethodId: Number(document.getElementById("paymentMethodId").value),
+            operationKey,
+            chargeIds
+        };
+
+        try {
+
+            const result = await Sisvet.api("/api/clinical-billing/payments", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            operationKey = Sisvet.operationKey();
+
+            Sisvet.message(
+                "paymentMessage",
+                "Cobro registrado como operación #" + result.saleId +
+                ". Total: " + Sisvet.money(result.totalAmount)
+            );
+
+            await loadCharges();
+
+        } catch (error) {
+            Sisvet.showError("paymentMessage", error);
+        }
+    });
+
+    async function start() {
+
+        if (!await Sisvet.init("Cobros clínicos")) return;
+
+        await loadOptions();
+        renderCharges();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pendientes y seguimientos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Pendientes y seguimientos clínicos</h1>
+            <p>Controles postconsulta, recordatorios de próximas dosis y revisión de pacientes pendientes sin IDs manuales.</p>
+        </header>
+
+        <section class="card">
+            <div class="dossier-header" style="margin-bottom:12px">
+                <h3 style="margin:0">Seguimientos pendientes de completar</h3>
+                <button type="button" id="refreshFollowUpsBtn" class="small secondary">Actualizar</button>
+            </div>
+
+            <div id="followUpFilters" class="tabs">
+                <button type="button" class="tab-btn active" data-filter="ALL">Todos pendientes</button>
+                <button type="button" class="tab-btn" data-filter="DUE">Vencidos o para hoy</button>
+                <button type="button" class="tab-btn" data-filter="UPCOMING">Próximos</button>
+            </div>
+
+            <div class="table-wrap">
+                <table id="followUpsTable"></table>
+            </div>
+            <p id="followUpsListMessage" class="message"></p>
+        </section>
+
+        <section class="card">
+            <h3>Programar seguimiento postconsulta o recordatorio</h3>
+            <form id="followUpForm">
+                <div class="form-grid">
+                    <div class="field full">
+                        <label>Mascota (buscar y seleccionar)</label>
+                        <div class="picker-stack">
+                            <div class="picker-toolbar">
+                                <input id="followUpPetFilter" type="search" placeholder="Filtrar por mascota, propietario o DNI...">
+                            </div>
+                            <select id="followUpPetId" name="petId" required></select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>Consulta asociada (opcional)</label>
+                        <select id="followUpConsultationId" name="consultationId">
+                            <option value="">Sin consulta asociada</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Fecha y hora programada</label>
+                        <input name="dueAt" type="datetime-local" required>
+                    </div>
+
+                    <div class="field full">
+                        <label>Motivo del seguimiento</label>
+                        <input name="reason" maxlength="500" required placeholder="Ej. Llamar para verificar tolerancia al antibiótico">
+                    </div>
+                </div>
+                <div class="actions">
+                    <button type="submit">Programar seguimiento</button>
+                </div>
+            </form>
+            <p id="followUpMessage" class="message"></p>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("followUps");</script>
+</body>
+</html>

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reportes | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Reportes financieros y comerciales</h1>
+            <p>Consultas analíticas del sistema SISVET-CLINIC.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Filtros del reporte</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Tipo de reporte</label>
+                    <select id="reportType">
+                        <option value="financial">Resumen financiero</option>
+                        <option value="sales">Ventas</option>
+                        <option value="purchases">Compras</option>
+                        <option value="expenses">Gastos</option>
+                        <option value="daily">Movimientos diarios</option>
+                        <option value="product-performance">Rendimiento de productos</option>
+                        <option value="product-sales">Productos vendidos</option>
+                        <option value="customer-frequency">Frecuencia de clientes</option>
+                        <option value="supplier-purchases">Compras por proveedor</option>
+                        <option value="seller-sales">Ventas por vendedor</option>
+                        <option value="payment-method-sales">Métodos de pago</option>
+                        <option value="expense-categories">Categorías de gastos</option>
+                        <option value="low-stock">Productos con bajo stock</option>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label>Fecha inicial</label>
+                    <input id="startDate" type="date">
+                </div>
+
+                <div class="field">
+                    <label>Fecha final</label>
+                    <input id="endDate" type="date">
+                </div>
+
+            </div>
+
+            <div class="actions">
+                <button type="button" id="generateButton">Generar reporte</button>
+                <button type="button" class="secondary" id="exportPdfButton">Exportar PDF</button>
+            </div>
+
+            <p id="reportMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3 id="reportTitle">Resultados</h3>
+
+            <div class="table-wrap">
+                <table id="reportTable"></table>
+            </div>
+
+            <div id="summaryResults"></div>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+        function renderFinancialReport(report) {
+
+        const container = document.getElementById("summaryResults");
+        container.replaceChildren();
+
+        const fields = [
+            { key: "startDate", label: "Fecha inicial", type: "date" },
+            { key: "endDate", label: "Fecha final", type: "date" },
+            { key: "saleCount", label: "Ventas registradas", type: "count" },
+            { key: "salesTotal", label: "Ingresos por ventas", type: "money" },
+            { key: "purchaseCount", label: "Compras registradas", type: "count" },
+            { key: "purchasesTotal", label: "Importe de compras", type: "money" },
+            { key: "expenseCount", label: "Gastos registrados", type: "count" },
+            { key: "expensesTotal", label: "Importe de gastos", type: "money" },
+            { key: "totalOutflows", label: "Total de egresos", type: "money" },
+            { key: "balance", label: "Balance simplificado", type: "money" },
+            { key: "averageTicket", label: "Ticket promedio", type: "money" },
+            { key: "balancePercentage", label: "Balance porcentual", type: "percentage" }
+        ];
+
+        const table = document.createElement("table");
+        const tbody = document.createElement("tbody");
+
+        for (const field of fields) {
+
+            const row = document.createElement("tr");
+            const label = document.createElement("td");
+            const result = document.createElement("td");
+
+            const value = report[field.key];
+
+            label.textContent = field.label;
+
+            switch (field.type) {
+
+                case "money":
+                    result.textContent = Sisvet.money(value);
+                    break;
+
+                case "count":
+                    result.textContent = Number(value ?? 0).toLocaleString("es-PE", {
+                        maximumFractionDigits: 0
+                    });
+                    break;
+
+                case "percentage":
+                    result.textContent = Number(value ?? 0).toLocaleString("es-PE", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2
+                    }) + " %";
+                    break;
+
+                default:
+                    result.textContent = value ?? "-";
+            }
+
+            row.append(label, result);
+            tbody.appendChild(row);
+        }
+
+        table.appendChild(tbody);
+        container.appendChild(table);
+    }
+
+    async function generateReport() {
+
+        const type = document.getElementById("reportType").value;
+        const startDate = document.getElementById("startDate").value;
+        const endDate = document.getElementById("endDate").value;
+
+        if (!startDate || !endDate || endDate < startDate) {
+            Sisvet.message("reportMessage", "Selecciona un intervalo válido.", true);
+            return;
+        }
+
+        const parameters = new URLSearchParams({ startDate, endDate });
+
+        try {
+
+            const result = await Sisvet.api(
+                "/api/reports/" + type + "?" + parameters
+            );
+
+            document.getElementById("reportTitle").textContent =
+                document.getElementById("reportType").selectedOptions[0].textContent;
+
+            document.getElementById("summaryResults").replaceChildren();
+            document.getElementById("reportTable").replaceChildren();
+
+            if (type === "financial" && !Array.isArray(result)) {
+
+                renderFinancialReport(result);
+
+            } else {
+
+                const rows = Array.isArray(result) ? result : result.rows || [];
+                Sisvet.renderObjectTable("reportTable", rows);
+            }
+
+            Sisvet.message("reportMessage", "Reporte generado correctamente.");
+
+        } catch (error) {
+            Sisvet.showError("reportMessage", error);
+        }
+    }
+
+    document.getElementById("generateButton").addEventListener("click", generateReport);
+    
+    document.getElementById("exportPdfButton").addEventListener("click", async () => {
+
+    const button = document.getElementById("exportPdfButton");
+    const type = document.getElementById("reportType").value;
+    const startDate = document.getElementById("startDate").value;
+    const endDate = document.getElementById("endDate").value;
+
+    if (type !== "low-stock" && (!startDate || !endDate || endDate < startDate)) {
+        Sisvet.message("reportMessage", "Selecciona un intervalo de fechas válido.", true);
+        return;
+    }
+
+    const params = type === "low-stock"
+        ? new URLSearchParams({ threshold: "5" })
+        : new URLSearchParams({ startDate, endDate });
+
+    button.disabled = true;
+
+    try {
+
+        const response = await fetch("/api/reports/" + type + "/pdf?" + params, {
+            credentials: "same-origin"
+        });
+
+        if (!response.ok) {
+            throw new Error("No se pudo generar el PDF. HTTP " + response.status);
+        }
+
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "sisvet-" + type + ".pdf";
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        Sisvet.message("reportMessage", "PDF generado correctamente.");
+
+    } catch (error) {
+
+        Sisvet.showError("reportMessage", error);
+
+    } finally {
+
+        button.disabled = false;
+    }
+});
+    
+    async function start() {
+
+        if (!await Sisvet.init("Reportes")) return;
+
+        const today = new Date();
+
+        const date = [
+            today.getFullYear(),
+            String(today.getMonth() + 1).padStart(2, "0"),
+            String(today.getDate()).padStart(2, "0")
+        ].join("-");
+
+        document.getElementById("startDate").value = date.slice(0, 8) + "01";
+        document.getElementById("endDate").value = date;
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

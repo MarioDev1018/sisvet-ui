@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel | SISVET-CLINIC</title>
+
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+
+<body>
+
+<div class="layout">
+
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Panel principal</h1>
+            <p id="welcome"></p>
+        </header>
+
+        <section class="card">
+
+            <h3>Módulos del sistema</h3>
+
+            <div class="quick-links">
+
+                <a href="/usuarios.html">Usuarios y roles</a>
+
+                <a href="/productos.html">Catálogo de productos</a>
+
+                <a href="/clientes.html">Clientes</a>
+
+                <a href="/proveedores.html">Proveedores</a>
+
+                <a href="/compras.html">Registrar compras</a>
+
+                <a href="/ventas.html">Registrar ventas</a>
+
+                <a href="/inventario.html">Inventario</a>
+
+                <a href="/facturas.html">Facturación</a>
+
+                <a href="/cobros-clinicos.html">Cobros clínicos</a>
+
+                <a href="/gastos.html">Gastos</a>
+
+                <a href="/reportes.html">Reportes financieros</a>
+
+            </div>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Sesión actual</h3>
+
+            <p id="userDetails"></p>
+
+        </section>
+
+    </main>
+
+</div>
+
+<script src="/js/sisvet.js"></script>
+
+<script>
+
+    async function start() {
+
+        try {
+
+            const initialized = await Sisvet.init("Panel principal");
+
+            if (!initialized) {
+                return;
+            }
+
+            const user = Sisvet.getUser();
+
+            document.getElementById("welcome").textContent =
+                "Bienvenido al sistema de gestión veterinaria.";
+
+            document.getElementById("userDetails").textContent =
+                user.fullName +
+                " | Usuario: " + user.username +
+                " | Rol: " + user.role;
+
+        } catch (error) {
+
+            console.error("Error al inicializar el panel:", error);
+        }
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

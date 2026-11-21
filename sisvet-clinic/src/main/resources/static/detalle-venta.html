@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Detalle de venta | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Consulta de venta</h1>
+            <p>Cabecera y productos registrados en una operación comercial.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Buscar venta</h3>
+
+            <form id="searchForm">
+
+                <div class="field">
+                    <label>Identificador de venta</label>
+                    <input id="saleId" type="number" min="1" required>
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Consultar venta</button>
+                </div>
+
+            </form>
+
+            <p id="searchMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Información general</h3>
+
+            <div class="table-wrap">
+                <table id="saleTable"></table>
+            </div>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Productos vendidos</h3>
+
+            <div class="table-wrap">
+                <table id="detailsTable"></table>
+            </div>
+
+            <p class="summary" id="total"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    async function loadSale(saleId) {
+
+        try {
+
+            const [sale, details] = await Promise.all([
+                Sisvet.api("/api/sales/" + saleId),
+                Sisvet.api("/api/sales/" + saleId + "/details")
+            ]);
+
+            Sisvet.renderTable("saleTable", [sale], [
+                { label: "ID", value: s => s.id },
+                { label: "Fecha", value: s => s.saleDatetime },
+                { label: "Usuario", value: s => s.userId },
+                { label: "Cliente", value: s => s.customerId },
+                { label: "Método", value: s => s.paymentMethodId },
+                { label: "Estado", value: s => s.recordStatus }
+            ]);
+
+            Sisvet.renderTable("detailsTable", details, [
+                { label: "Producto ID", value: d => d.productId },
+                { label: "Presentación ID", value: d => d.presentationId },
+                { label: "Cantidad", value: d => d.quantity },
+                { label: "Cantidad física", value: d => d.baseQuantity },
+                { label: "Precio", value: d => Sisvet.money(d.unitPrice) },
+                { label: "Subtotal", value: d => Sisvet.money(d.subtotal) }
+            ]);
+
+            document.getElementById("total").textContent =
+                "Total: " + Sisvet.money(sale.totalAmount);
+
+            Sisvet.message("searchMessage", "Venta encontrada.");
+
+        } catch (error) {
+            Sisvet.showError("searchMessage", error);
+        }
+    }
+
+    document.getElementById("searchForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const saleId = Number(document.getElementById("saleId").value);
+
+        if (saleId > 0) {
+            await loadSale(saleId);
+        }
+    });
+
+    async function start() {
+
+        if (!await Sisvet.init("Detalle de venta")) return;
+
+        const parameters = new URLSearchParams(window.location.search);
+        const saleId = Number(parameters.get("id"));
+
+        if (saleId > 0) {
+            document.getElementById("saleId").value = saleId;
+            await loadSale(saleId);
+        }
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

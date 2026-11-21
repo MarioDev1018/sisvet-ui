@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agenda de citas | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Agenda gráfica de citas</h1>
+            <p>Disponibilidad visual mensual y por horarios de cada profesional veterinario y especialista.</p>
+        </header>
+
+        <section class="card">
+            <div class="toolbar">
+                <div class="field" style="flex:1;min-width:0">
+                    <label>Profesional clínico</label>
+                    <select id="agendaProfessionalId"></select>
+                </div>
+                <button type="button" id="agendaRefreshBtn" class="secondary">Actualizar agenda</button>
+            </div>
+            <div id="professionalSpecsInfo" class="muted"></div>
+        </section>
+
+        <div class="split-grid">
+            <section class="card">
+                <div class="calendar-head">
+                    <button type="button" id="calendarPrevBtn" class="small secondary">&lt; Anterior</button>
+                    <span id="calendarMonthLabel" class="calendar-title"></span>
+                    <button type="button" id="calendarNextBtn" class="small secondary">Siguiente &gt;</button>
+                </div>
+
+                <div class="calendar-wrap">
+                    <div class="calendar-weekdays">
+                        <div>Lun</div><div>Mar</div><div>Mié</div><div>Jue</div><div>Vie</div><div>Sáb</div><div>Dom</div>
+                    </div>
+                    <div id="calendarGrid" class="calendar-grid"></div>
+                </div>
+
+                <h4 id="daySlotsTitle" style="margin-top:20px">Horarios del día</h4>
+                <div id="daySlotsGrid" class="slot-grid"></div>
+            </section>
+
+            <section class="card">
+                <h3>Programar nueva cita</h3>
+                <form id="appointmentForm">
+                    <div class="form-grid">
+                        <div class="field full">
+                            <label>Mascota (buscar y seleccionar)</label>
+                            <div class="picker-stack">
+                                <div class="picker-toolbar">
+                                    <input id="agendaPetFilter" type="search" placeholder="Filtrar por mascota, propietario o DNI...">
+                                </div>
+                                <select id="appointmentPetId" name="petId" required></select>
+                            </div>
+                        </div>
+
+                        <div class="field">
+                            <label>Tipo de cita</label>
+                            <select id="appointmentKind" name="kind">
+                                <option value="GENERAL">Consulta general</option>
+                                <option value="FOLLOW_UP">Cita de seguimiento</option>
+                                <option value="SPECIALIST">Atención por especialidad</option>
+                            </select>
+                        </div>
+
+                        <div id="appointmentSpecialtyField" class="field" hidden>
+                            <label>Especialidad requerida</label>
+                            <select id="appointmentSpecialty" name="specialty"></select>
+                        </div>
+
+                        <div class="field">
+                            <label>Fecha y hora de inicio</label>
+                            <input id="appointmentDateInput" name="date" type="datetime-local" required>
+                        </div>
+
+                        <div class="field">
+                            <label>Duración (minutos)</label>
+                            <select name="durationMinutes">
+                                <option value="30">30 minutos</option>
+                                <option value="15">15 minutos</option>
+                                <option value="45">45 minutos</option>
+                                <option value="60">60 minutos</option>
+                                <option value="90">90 minutos</option>
+                            </select>
+                        </div>
+
+                        <div class="field full">
+                            <label>Consulta previa vinculada (opcional)</label>
+                            <select id="appointmentConsultationId" name="consultationId">
+                                <option value="">Sin consulta asociada</option>
+                            </select>
+                        </div>
+
+                        <div class="field full">
+                            <label>Motivo de la cita</label>
+                            <input id="appointmentReasonInput" name="reason" maxlength="500" required placeholder="Ej. Control postoperatorio, vacuna anual">
+                        </div>
+                    </div>
+
+                    <div class="actions">
+                        <button type="submit">Confirmar cita</button>
+                    </div>
+                </form>
+                <p id="appointmentMessage" class="message"></p>
+            </section>
+        </div>
+
+        <section class="card">
+            <h3 id="appointmentsListHeading">Citas confirmadas del mes</h3>
+            <div class="table-wrap">
+                <table id="appointmentsTable"></table>
+            </div>
+            <p id="appointmentsTableMessage" class="message"></p>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("appointments");</script>
+</body>
+</html>

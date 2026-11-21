@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compras | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Registro de compras</h1>
+            <p>Entrada de productos por presentación y unidad de inventario.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Datos de compra</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Proveedor</label>
+                    <select id="supplierId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Método de pago</label>
+                    <select id="paymentMethodId"></select>
+                </div>
+
+            </div>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Agregar producto</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Producto</label>
+                    <select id="productId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Presentación de compra</label>
+                    <select id="presentationId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Cantidad de presentaciones</label>
+                    <input id="quantity" type="number" min="1" value="1">
+                </div>
+
+                <div class="field">
+                    <label>Costo por presentación (S/)</label>
+                    <input id="unitCost" type="number" min="0.01" step="0.01">
+                </div>
+
+            </div>
+
+            <p id="conversionPreview" class="muted"></p>
+
+            <div class="actions">
+                <button id="addItemButton" type="button">Agregar a compra</button>
+            </div>
+
+            <p id="itemMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Detalle de compra</h3>
+
+            <div class="table-wrap">
+                <table id="itemsTable"></table>
+            </div>
+
+            <p class="summary" id="total">Total: S/ 0.00</p>
+
+            <div class="actions">
+                <button id="confirmButton" type="button">Confirmar compra</button>
+                <button id="clearButton" class="secondary" type="button">Nueva compra</button>
+            </div>
+
+            <p id="purchaseMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let products = [];
+    let presentations = [];
+    let items = [];
+    let operationKey = Sisvet.operationKey();
+
+    function fillSelect(id, data, getLabel) {
+
+        const select = document.getElementById(id);
+        select.replaceChildren();
+
+        for (const item of data) {
+            select.add(new Option(getLabel(item), item.id));
+        }
+    }
+
+    function getSelectedProduct() {
+
+        const id = Number(document.getElementById("productId").value);
+
+        return products.find(p => p.id === id);
+    }
+
+    function getSelectedPresentation() {
+
+        const id = Number(document.getElementById("presentationId").value);
+
+        return presentations.find(p => p.id === id);
+    }
+
+    async function loadPresentations() {
+
+        const product = getSelectedProduct();
+
+        if (!product) return;
+
+        try {
+
+            presentations = await Sisvet.api(
+                "/api/products/" + product.id + "/presentations"
+            );
+
+            fillSelect("presentationId", presentations, p =>
+                p.name + " (" + p.quantityInBase + " " + product.baseUnit + ")"
+            );
+
+            updateConversion();
+
+        } catch (error) {
+            Sisvet.showError("itemMessage", error);
+        }
+    }
+
+    function updateConversion() {
+
+        const product = getSelectedProduct();
+        const presentation = getSelectedPresentation();
+
+        const quantity = Number(document.getElementById("quantity").value);
+
+        if (!product || !presentation || !Number.isInteger(quantity) || quantity <= 0) {
+            document.getElementById("conversionPreview").textContent = "";
+            return;
+        }
+
+        const baseQuantity = quantity * presentation.quantityInBase;
+
+        let description = baseQuantity + " unidades";
+
+        if (product.baseUnit === "G") {
+            description = baseQuantity + " g = " + (baseQuantity / 1000) + " kg";
+        }
+
+        if (product.baseUnit === "ML") {
+            description = baseQuantity + " ml = " + (baseQuantity / 1000) + " L";
+        }
+
+        document.getElementById("conversionPreview").textContent =
+            quantity + " × " + presentation.name + " equivalen a " + description;
+    }
+
+    async function loadData() {
+
+        try {
+
+            const [suppliers, productList, methods] = await Promise.all([
+                Sisvet.api("/api/suppliers"),
+                Sisvet.api("/api/products"),
+                Sisvet.api("/api/payment-methods")
+            ]);
+
+            products = productList;
+
+            fillSelect("supplierId", suppliers, s => s.businessName);
+            fillSelect("productId", products, p => p.name);
+            fillSelect("paymentMethodId", methods, m => m.name);
+
+            await loadPresentations();
+
+        } catch (error) {
+            Sisvet.showError("purchaseMessage", error);
+        }
+    }
+
+    function renderItems() {
+
+        Sisvet.renderTable("itemsTable", items, [
+            { label: "Producto", value: i => i.productName },
+            { label: "Presentación", value: i => i.presentationName },
+            { label: "Cantidad", value: i => i.quantity },
+            { label: "Entrada física", value: i => i.baseQuantity + " " + i.baseUnit },
+            { label: "Costo unitario", value: i => Sisvet.money(i.unitCost) },
+            { label: "Subtotal", value: i => Sisvet.money(i.quantity * i.unitCost) }
+        ]);
+
+        const total = items.reduce(
+            (sum, item) => sum + item.quantity * item.unitCost,
+            0
+        );
+
+        document.getElementById("total").textContent =
+            "Total: " + Sisvet.money(total);
+    }
+
+    document.getElementById("addItemButton").addEventListener("click", () => {
+
+        const product = getSelectedProduct();
+        const presentation = getSelectedPresentation();
+
+        const quantity = Number(document.getElementById("quantity").value);
+        const unitCost = Number(document.getElementById("unitCost").value);
+
+        if (!product || !presentation || !Number.isInteger(quantity)
+                || quantity <= 0 || !Number.isFinite(unitCost) || unitCost <= 0) {
+
+            Sisvet.message("itemMessage", "Producto, cantidad o costo inválido.", true);
+            return;
+        }
+
+        const baseQuantity = quantity * presentation.quantityInBase;
+
+        if (!Number.isSafeInteger(baseQuantity) || baseQuantity > 2147483647) {
+            Sisvet.message("itemMessage", "Cantidad demasiado grande.", true);
+            return;
+        }
+
+        if (items.some(item => item.presentationId === presentation.id)) {
+            Sisvet.message("itemMessage", "La presentación ya está agregada.", true);
+            return;
+        }
+
+        items.push({
+            productId: product.id,
+            presentationId: presentation.id,
+            productName: product.name,
+            presentationName: presentation.name,
+            baseUnit: product.baseUnit,
+            quantity,
+            baseQuantity,
+            unitCost
+        });
+
+        renderItems();
+
+        Sisvet.message("itemMessage", "Producto agregado.");
+    });
+
+    document.getElementById("clearButton").addEventListener("click", () => {
+
+        items = [];
+        operationKey = Sisvet.operationKey();
+
+        renderItems();
+        Sisvet.message("purchaseMessage", "");
+    });
+
+    document.getElementById("confirmButton").addEventListener("click", async () => {
+
+        if (items.length === 0) {
+            Sisvet.message("purchaseMessage", "Agrega productos.", true);
+            return;
+        }
+
+        const button = document.getElementById("confirmButton");
+
+        const request = {
+            supplierId: Number(document.getElementById("supplierId").value),
+            paymentMethodId: Number(document.getElementById("paymentMethodId").value),
+            operationKey,
+            items: items.map(item => ({
+                productId: item.productId,
+                presentationId: item.presentationId,
+                quantity: item.quantity,
+                unitCost: item.unitCost
+            }))
+        };
+
+        button.disabled = true;
+
+        try {
+
+            const result = await Sisvet.api("/api/purchases", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            items = [];
+            operationKey = Sisvet.operationKey();
+
+            renderItems();
+
+            Sisvet.message(
+                "purchaseMessage",
+                "Compra #" + result.purchaseId +
+                " registrada. Total: " + Sisvet.money(result.totalAmount)
+            );
+
+        } catch (error) {
+            Sisvet.showError("purchaseMessage", error);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    document.getElementById("productId").addEventListener("change", loadPresentations);
+    document.getElementById("presentationId").addEventListener("change", updateConversion);
+    document.getElementById("quantity").addEventListener("input", updateConversion);
+
+    async function start() {
+
+        if (!await Sisvet.init("Compras")) return;
+
+        await loadData();
+        renderItems();
+    }
+
+    start();
+
+</script>
+</body>
+</html>

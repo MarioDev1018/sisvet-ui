@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tratamientos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Atención clínica</h1>
+            <p>Los tratamientos y prescripciones ahora están integrados dentro de la pantalla unificada de Atención Clínica.</p>
+        </header>
+        <section class="card">
+            <p>Redirigiendo a la vista integrada...</p>
+            <div class="actions">
+                <a class="button-link" href="/consultas.html?tab=treatment">Ir a Atención clínica</a>
+            </div>
+        </section>
+    </main>
+</div>
+<script src="/js/sisvet.js"></script>
+<script>
+    (async () => {
+        if (await Sisvet.init("Atención clínica")) {
+            await Sisvet.navigateTo("/consultas.html?tab=treatment");
+        }
+    })();
+</script>
+</body>
+</html>

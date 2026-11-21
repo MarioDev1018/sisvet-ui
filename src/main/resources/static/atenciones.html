@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recepción y sala de espera | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Recepción y sala de espera</h1>
+            <p>Ingreso de pacientes, pesaje inicial orientativo, triage de urgencias y control de estados hasta el retiro.</p>
+        </header>
+
+        <section class="card">
+            <h3>Registrar llegada o urgencia</h3>
+            <div id="arrivalRoleNotice" class="alert alert-info" hidden></div>
+
+            <form id="arrivalForm">
+                <div class="form-grid">
+                    <div class="field full">
+                        <label>Paciente (buscar y seleccionar)</label>
+                        <div class="picker-stack">
+                            <div class="picker-toolbar">
+                                <input id="arrivalPetFilter" type="search" placeholder="Filtrar por mascota, propietario o DNI...">
+                                <a class="button-link outline" href="/pacientes.html">+ Nuevo paciente</a>
+                            </div>
+                            <select id="arrivalPetId" name="petId" required></select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>Tipo de ingreso</label>
+                        <select id="arrivalType" name="type">
+                            <option value="MEDICAL">Consulta médica</option>
+                            <option value="VACCINATION">Vacunación independiente</option>
+                            <option value="URGENCY">Urgencia inmediata</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Peso medido en recepción (kg, opcional)</label>
+                        <div class="customer-row">
+                            <input id="receptionWeight" type="number" step="0.01" min="0.01" placeholder="Se prellenará al abrir consulta">
+                            <button type="button" id="checkReceptionWeightBtn" class="outline">Verificar peso</button>
+                        </div>
+                    </div>
+
+                    <div id="groomingField" class="field">
+                        <label>Servicios adicionales</label>
+                        <label style="display:flex;align-items:center;gap:8px;margin-top:6px">
+                            <input id="requiresGrooming" name="requiresGrooming" type="checkbox" style="width:auto">
+                            <span>Requiere baño y/o peluquería después de consulta</span>
+                        </label>
+                    </div>
+
+                    <div id="urgencyDescField" class="field full" hidden>
+                        <label>Descripción de la urgencia</label>
+                        <input id="urgencyDescription" name="description" maxlength="500" placeholder="Describa síntomas agudos o situación de emergencia">
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="submitArrivalBtn" type="submit">Registrar ingreso</button>
+                </div>
+            </form>
+
+            <div id="receptionWeightAlert" class="alert" hidden></div>
+            <p id="arrivalMessage" class="message"></p>
+        </section>
+
+        <section class="card">
+            <div class="dossier-header" style="margin-bottom:12px">
+                <h3 style="margin:0">Tablero completo de atenciones activas</h3>
+                <button type="button" id="refreshAttentionsBtn" class="small secondary">Actualizar tablero</button>
+            </div>
+
+            <div id="attentionStateFilters" class="tabs">
+                <button type="button" class="tab-btn active" data-state="ALL">Todas activas</button>
+                <button type="button" class="tab-btn" data-state="EN_ESPERA">En espera</button>
+                <button type="button" class="tab-btn" data-state="ATENDIENDOSE">Atendiéndose</button>
+                <button type="button" class="tab-btn" data-state="GROOMING">Baño / Peluquería</button>
+                <button type="button" class="tab-btn" data-state="LISTO_RECOJO">Listos para recojo</button>
+            </div>
+
+            <div class="table-wrap">
+                <table id="activeAttentionsTable"></table>
+            </div>
+            <p id="boardMessage" class="message"></p>
+            <div id="pickupBillingShortcut" class="alert alert-warn" hidden>
+                <span id="pickupBillingText"></span>
+                <div class="actions" style="margin-top:8px">
+                    <a id="pickupBillingLink" class="button-link" href="/cobros-clinicos.html">Ir a Cobros clínicos</a>
+                </div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("attentions");</script>
+</body>
+</html>

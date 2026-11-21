@@ -1,0 +1,1447 @@
+# **SISVET-CLINIC — Corrección lógica del módulo Clinical**
+
+He terminado la revisión y las modificaciones. Conservamos la arquitectura hexagonal, los puertos, los adaptadores, los servicios y los patrones definidos en Clinical V0.6.
+
+No vamos a reconstruir el módulo. Vamos a sustituir únicamente 10 archivos Java y ejecutar una migración SQL para añadir los campos necesarios.
+
+## **1. Resumen de los cambios**
+
+| Problema                             | Corrección                                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------------------- |
+| Vacunación exige diagnóstico         | State distingue entre atención médica y vacunación                                    |
+| Vacunación no tiene cierre propio    | Se registra vaccinationCompleted cuando la vacuna se guarda correctamente             |
+| Recogida exige consultationId        | Solo las atenciones médicas requieren una consulta                                    |
+| Actualizaciones simultáneas          | Se implementa concurrencia optimista con version                                      |
+| Atenciones antiguas pendientes       | Se informa el identificador y estado de la atención que impide registrar otra llegada |
+| Modificación destructiva de mascotas | Los campos opcionales omitidos conservan su valor anterior                            |
+
+La recuperación masiva del historial no se modifica: es un asunto de paginación y rendimiento, no un error de transición de estados. Tampoco añadiremos un mecanismo automático para cerrar atenciones antiguas.
+
+### **Archivos que se modificarán**
+
+```
+modules/
+└── clinical/
+    ├── domain/
+    │   ├── ClinicalAttention.java
+    │   ├── Vaccination.java
+    │   └── state/
+    │       ├── InProgressState.java
+    │       └── ReadyForPickupState.java
+    │
+    ├── service/
+    │   └── implementation/
+    │       ├── AttentionService.java
+    │       ├── TreatmentService.java
+    │       └── PatientUpdateService.java
+    │
+    └── infrastructure/
+        └── output/
+            └── persistence/
+                ├── SqlClinicalMappers.java
+                ├── SqlAttentionAdapter.java
+                └── SqlTreatmentAdapter.java
+```
+
+Los archivos siguientes son sustituciones completas. No necesitas combinar manualmente fragmentos de métodos con el código anterior.
+
+## **2. Dominio**
+
+### **2.1. ClinicalAttention.java**
+
+Ruta: `clinical/domain/ClinicalAttention.java`
+
+La entidad ahora distingue qué condición debe cumplirse para finalizar cada tipo de atención.
+
+- MEDICAL y URGENCY necesitan consulta cerrada.
+- VACCINATION necesita vacunación registrada.
+- El atributo version permite comprobar si otra operación modificó la atención desde que fue leída.
+
+Se conserva el constructor anterior para evitar romper las clases existentes.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.state.*;
+import java.time.LocalDateTime;
+
+public class ClinicalAttention {
+
+    private long id;
+    private final long petId;
+    private String type;
+    private Integer priority;
+    private String urgencyDescription;
+    private Long priorityAssignedBy;
+    private AttentionState state;
+    private LocalDateTime arrivedAt;
+    private boolean requiresGrooming;
+    private boolean clinicalClosed;
+    private Long consultationId;
+    private boolean vaccinationCompleted;
+    private long version;
+
+    // Conserva compatibilidad con los constructores previos.
+    public ClinicalAttention(
+        long id, long petId, String type, Integer priority,
+        String urgencyDescription, Long priorityAssignedBy, String state,
+        LocalDateTime arrivedAt, boolean requiresGrooming,
+        boolean clinicalClosed, Long consultationId
+    ) {
+        this(id, petId, type, priority, urgencyDescription, priorityAssignedBy,
+            state, arrivedAt, requiresGrooming, clinicalClosed, consultationId,
+            false, 0);
+    }
+
+    public ClinicalAttention(
+        long id, long petId, String type, Integer priority,
+        String urgencyDescription, Long priorityAssignedBy, String state,
+        LocalDateTime arrivedAt, boolean requiresGrooming,
+        boolean clinicalClosed, Long consultationId,
+        boolean vaccinationCompleted, long version
+    ) {
+        this.id = id;
+        this.petId = petId;
+        this.type = type;
+        this.priority = priority;
+        this.urgencyDescription = urgencyDescription;
+        this.priorityAssignedBy = priorityAssignedBy;
+        this.state = AttentionStates.fromName(state);
+        this.arrivedAt = arrivedAt;
+        this.requiresGrooming = requiresGrooming;
+        this.clinicalClosed = clinicalClosed;
+        this.consultationId = consultationId;
+        this.vaccinationCompleted = vaccinationCompleted;
+        this.version = version;
+    }
+
+    public long getId() { return id; }
+    public void setId(long id) { this.id = id; }
+    public long getPetId() { return petId; }
+    public String getType() { return type; }
+    public Integer getPriority() { return priority; }
+    public String getUrgencyDescription() { return urgencyDescription; }
+    public Long getPriorityAssignedBy() { return priorityAssignedBy; }
+    public String getStatus() { return state.getName(); }
+    public LocalDateTime getArrivedAt() { return arrivedAt; }
+    public boolean isRequiresGrooming() { return requiresGrooming; }
+    public boolean isClinicalClosed() { return clinicalClosed; }
+    public Long getConsultationId() { return consultationId; }
+    public boolean isVaccinationCompleted() { return vaccinationCompleted; }
+    public long getVersion() { return version; }
+
+    public void incrementVersion() { version++; }
+
+    public boolean requiresMedicalConsultation() {
+        return "MEDICAL".equals(type) || "URGENCY".equals(type);
+    }
+
+    public void assertServiceCompleted() {
+        if (requiresMedicalConsultation()) {
+            if (!clinicalClosed || consultationId == null) {
+                throw new IllegalStateException(
+                    "Falta cerrar la consulta con diagnóstico e indicaciones"
+                );
+            }
+        } else if ("VACCINATION".equals(type)) {
+            if (!vaccinationCompleted) {
+                throw new IllegalStateException(
+                    "Debe registrar la vacuna aplicada antes de finalizar"
+                );
+            }
+        } else {
+            throw new IllegalStateException(
+                "El flujo de atención no está habilitado: " + type
+            );
+        }
+    }
+
+    public void markVaccinationCompleted() {
+        if (!"VACCINATION".equals(type) ||
+            !"ATENDIENDOSE".equals(getStatus()) || arrivedAt == null) {
+            throw new IllegalStateException(
+                "La vacunación debe estar en una atención iniciada"
+            );
+        }
+
+        vaccinationCompleted = true;
+    }
+
+    public void markArrived(LocalDateTime at, boolean grooming) {
+        if (arrivedAt != null) {
+            throw new IllegalStateException("La llegada ya fue registrada");
+        }
+        if (!"EN_ESPERA".equals(getStatus())) {
+            throw new IllegalStateException("La atención ya no está en espera");
+        }
+        arrivedAt = at;
+        requiresGrooming = grooming;
+    }
+
+    public void registerUrgency(String description) {
+        if (description == null || description.isBlank()) {
+            throw new IllegalArgumentException("Describa la urgencia");
+        }
+        if (priority != null) {
+            throw new IllegalStateException(
+                "Solo el veterinario puede modificar la valoración clínica"
+            );
+        }
+        urgencyDescription = description;
+        type = "URGENCY";
+    }
+
+    public void assignPriority(int value, long veterinarianId) {
+        if (urgencyDescription == null) {
+            throw new IllegalStateException("No existe una urgencia registrada");
+        }
+        if (value < 1 || value > 5) {
+            throw new IllegalArgumentException("Prioridad entre 1 y 5");
+        }
+        priority = value;
+        priorityAssignedBy = veterinarianId;
+    }
+
+    public void setConsultationId(long id) { consultationId = id; }
+    public void setClinicalClosed() { clinicalClosed = true; }
+    public void changeState(AttentionState newState) { state = newState; }
+    public void advance() { state.advance(this); }
+}
+```
+
+### **2.2. Vaccination.java**
+
+Ruta: `clinical/domain/Vaccination.java`
+
+Añadimos attentionId para saber en qué atención se aplicó la vacuna, incluso cuando no existe una consulta médica.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+public record Vaccination(
+    long id,
+    long petId,
+    Long consultationId,
+    Long attentionId,
+    String vaccine,
+    String dose,
+    LocalDateTime appliedAt,
+    LocalDate nextDoseDate,
+    long veterinarianId
+) {}
+```
+
+## **3. Patrón State corregido**
+
+### **3.1. InProgressState.java**
+
+Ruta: `clinical/domain/state/InProgressState.java`
+
+Este es el cambio principal.
+
+Anteriormente, todas las atenciones exigían clinicalClosed. Ahora la condición se determina según el tipo de atención mediante assertServiceCompleted().
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class InProgressState implements AttentionState {
+
+    public String getName() { return "ATENDIENDOSE"; }
+
+    public void advance(ClinicalAttention attention) {
+        attention.assertServiceCompleted();
+
+        if (attention.requiresMedicalConsultation() &&
+            attention.isRequiresGrooming()) {
+            attention.changeState(new BathingState());
+        } else {
+            attention.changeState(new ReadyForPickupState());
+        }
+    }
+}
+```
+
+Así, una vacunación independiente sigue este flujo:
+
+```
+EN_ESPERA
+    |
+    | Iniciar atención
+    v
+ATENDIENDOSE
+    |
+    | Registrar vacuna aplicada
+    | vaccinationCompleted = true
+    v
+LISTO_RECOJO
+    |
+    | Registrar retiro
+    v
+ATENDIDO
+```
+
+No necesita diagnóstico ni indicaciones médicas de una consulta inexistente.
+
+### **3.2. ReadyForPickupState.java**
+
+Ruta: `clinical/domain/state/ReadyForPickupState.java`
+
+La última transición también comprobará la condición correspondiente al tipo de atención.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class ReadyForPickupState implements AttentionState {
+
+    public String getName() { return "LISTO_RECOJO"; }
+
+    public void advance(ClinicalAttention attention) {
+        attention.assertServiceCompleted();
+        attention.changeState(new PickedUpState());
+    }
+}
+```
+
+Los demás estados no se modifican:
+
+- AttentionState.java
+- AttentionStates.java
+- WaitingState.java
+- BathingState.java
+- GroomingState.java
+- PickedUpState.java
+
+El patrón conserva las mismas clases y relaciones principales del diagrama V0.6.
+
+## **4. Servicios de aplicación**
+
+### **4.1. AttentionService.java**
+
+Ruta: `clinical/service/implementation/AttentionService.java`
+
+Los cambios se concentran en tres puntos:
+
+- registerArrival() admite MEDICAL y VACCINATION, y detecta atenciones anteriores pendientes.
+- startAttention() selecciona VaccinationWorkflow para una vacunación.
+- registerPickup() permite finalizar una vacunación sin inventar consultationId.
+
+También se mantienen las restricciones que reservan el inicio y avance clínico al veterinario o especialista.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Locale;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.AttentionUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+import com.donkan.sisvetclinic.modules.clinical.service.workflow.AttentionWorkflow;
+
+@Service
+public class AttentionService implements AttentionUseCase {
+
+    private final AttentionRepositoryPort attentions;
+    private final PatientRepositoryPort patients;
+    private final ClinicalRecordPort records;
+    private final ClinicalChargePort charges;
+    private final ActorPort actors;
+    private final List<AttentionWorkflow> workflows;
+
+    public AttentionService(
+        AttentionRepositoryPort attentions,
+        PatientRepositoryPort patients,
+        ClinicalRecordPort records,
+        ClinicalChargePort charges,
+        ActorPort actors,
+        List<AttentionWorkflow> workflows
+    ) {
+        this.attentions = attentions;
+        this.patients = patients;
+        this.records = records;
+        this.charges = charges;
+        this.actors = actors;
+        this.workflows = workflows;
+    }
+
+    @Transactional
+    public ClinicalAttention registerArrival(ArrivalRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null) {
+            throw new IllegalArgumentException("Paciente no encontrado");
+        }
+
+        String type = r.type() == null ? "MEDICAL" :
+            r.type().trim().toUpperCase(Locale.ROOT);
+
+        if (!"MEDICAL".equals(type) && !"VACCINATION".equals(type)) {
+            throw new IllegalArgumentException(
+                "Solo se admiten MEDICAL y VACCINATION en esta versión"
+            );
+        }
+
+        if ("VACCINATION".equals(type) && r.requiresGrooming()) {
+            throw new IllegalArgumentException(
+                "La vacunación independiente no incluye peluquería"
+            );
+        }
+
+        ClinicalAttention attention = attentions.findOpenByPet(r.petId());
+
+        if (attention != null && attention.getArrivedAt() != null) {
+            throw new IllegalStateException(
+                "La mascota conserva la atención #" + attention.getId() +
+                " en estado " + attention.getStatus() +
+                ". Debe resolver esa atención antes de registrar otra llegada"
+            );
+        }
+
+        if (attention != null && !"EN_ESPERA".equals(attention.getStatus())) {
+            throw new IllegalStateException("Atención previa pendiente de regularización");
+        }
+
+        if (attention == null) {
+            attention = new ClinicalAttention(
+                0, r.petId(), type, null, null, null,
+                "EN_ESPERA", null, r.requiresGrooming(), false, null
+            );
+        } else if (!"URGENCY".equals(attention.getType()) &&
+                   !type.equals(attention.getType())) {
+            throw new IllegalStateException(
+                "Existe una atención previa con otro tipo: " + attention.getType()
+            );
+        }
+
+        attention.markArrived(LocalDateTime.now(), r.requiresGrooming());
+        return attentions.save(attention);
+    }
+
+    @Transactional
+    public void registerUrgency(UrgencyRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null) {
+            throw new IllegalArgumentException("Mascota inexistente");
+        }
+
+        ClinicalAttention attention = attentions.findOpenByPet(r.petId());
+
+        if (attention == null) {
+            attention = new ClinicalAttention(
+                0, r.petId(), "URGENCY", null, null, null,
+                "EN_ESPERA", null, false, false, null
+            );
+        }
+
+        if (!"EN_ESPERA".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "La urgencia debe registrarse durante la espera"
+            );
+        }
+
+        attention.registerUrgency(r.description());
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void assignPriority(long id, int priority) {
+        Actor actor = ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+        attention.assignPriority(priority, actor.id());
+        attentions.save(attention);
+        attentions.auditPriority(id, actor.id(), priority);
+    }
+
+    public List<ClinicalAttention> getWaitingPatients() {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+        return attentions.findWaiting();
+    }
+
+    @Transactional
+    public void startAttention(long id) {
+        ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+        String type = "URGENCY".equals(attention.getType())
+            ? "MEDICAL" : attention.getType();
+
+        AttentionWorkflow workflow = workflows.stream()
+            .filter(w -> w.supports(type))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException(
+                "No existe workflow para " + type
+            ));
+
+        workflow.execute(attention);
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void advanceAttention(long id) {
+        ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+
+        if ("LISTO_RECOJO".equals(attention.getStatus()) ||
+            "ATENDIDO".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "Use el registro de retiro para finalizar la atención"
+            );
+        }
+
+        attention.advance();
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void registerPickup(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+
+        if (!"LISTO_RECOJO".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "La mascota todavía no está lista para recojo"
+            );
+        }
+
+        attention.assertServiceCompleted();
+
+        if (attention.requiresMedicalConsultation()) {
+            if (!charges.isSettled(attention.getConsultationId())) {
+                throw new IllegalStateException(
+                    "La atención clínica registra cobros pendientes"
+                );
+            }
+        }
+
+        // La vacunación sin consulta se cierra sin inventar una consulta médica.
+        // El cobro de una vacunación independiente requiere su vínculo comercial propio.
+        attention.advance();
+        attentions.save(attention);
+    }
+
+    private ClinicalAttention requireAttention(long id) {
+        ClinicalAttention attention = attentions.findById(id);
+
+        if (attention == null) {
+            throw new IllegalArgumentException("Atención no encontrada");
+        }
+
+        return attention;
+    }
+}
+```
+
+La detección de una atención anterior no la cierra automáticamente ni altera sus registros. Devuelve su identificador para que el personal pueda resolverla mediante el proceso correspondiente.
+
+### **4.2. TreatmentService.java**
+
+Ruta: `clinical/service/implementation/TreatmentService.java`
+
+Aquí conectamos el registro de la vacuna con el patrón State.
+
+La operación registerVaccination() comprueba que exista una atención iniciada. Si es una vacunación independiente, guarda la vacuna y marca vaccinationCompleted. Si la vacuna se aplica durante una consulta médica, mantiene la asociación con esa consulta y no sustituye su cierre clínico.
+
+Todo ocurre dentro de una misma transacción.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class TreatmentService implements TreatmentUseCase {
+
+    private final TreatmentRepositoryPort treatments;
+    private final ClinicalRecordPort records;
+    private final PatientRepositoryPort patients;
+    private final AttentionRepositoryPort attentions;
+    private final FollowUpUseCase followUps;
+    private final ActorPort actors;
+    private final MedicationLookupPort medications;
+
+    public TreatmentService(
+        TreatmentRepositoryPort treatments,
+        ClinicalRecordPort records,
+        PatientRepositoryPort patients,
+        AttentionRepositoryPort attentions,
+        FollowUpUseCase followUps,
+        ActorPort actors,
+        MedicationLookupPort medications
+    ) {
+        this.treatments = treatments;
+        this.records = records;
+        this.patients = patients;
+        this.attentions = attentions;
+        this.followUps = followUps;
+        this.actors = actors;
+        this.medications = medications;
+    }
+
+    @Transactional
+    public Treatment registerTreatment(TreatmentRequest r) {
+        Actor actor = vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.description() == null || r.description().isBlank() ||
+            r.instructions() == null || r.instructions().isBlank()) {
+            throw new IllegalArgumentException(
+                "Tratamiento e indicaciones requeridos"
+            );
+        }
+
+        return treatments.saveTreatment(
+            new Treatment(
+                0, consultation.id(), r.description(), r.instructions(),
+                r.productId(), LocalDateTime.now(), actor.id()
+            )
+        );
+    }
+
+    @Transactional
+    public ClinicalProcedure registerProcedure(ProcedureRequest r) {
+        Actor actor = vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.name() == null || r.name().isBlank()) {
+            throw new IllegalArgumentException(
+                "Indique procedimiento realizado"
+            );
+        }
+
+        return treatments.saveProcedure(
+            new ClinicalProcedure(
+                0, consultation.id(), r.name(), r.observations(),
+                LocalDateTime.now(), actor.id()
+            )
+        );
+    }
+
+    @Transactional
+    public Vaccination registerVaccination(VaccinationRequest r) {
+        Actor actor = vet();
+
+        if (r == null || patients.findById(r.petId()) == null ||
+            r.vaccine() == null || r.vaccine().isBlank() ||
+            r.dose() == null || r.dose().isBlank()) {
+            throw new IllegalArgumentException(
+                "Paciente, vacuna y dosis son requeridos"
+            );
+        }
+
+        ClinicalAttention attention = attentions.findOpenByPet(r.petId());
+
+        if (attention == null || !"ATENDIENDOSE".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "Debe iniciar una atención de vacunación o consulta médica"
+            );
+        }
+
+        if ("VACCINATION".equals(attention.getType())) {
+            if (r.consultationId() != null) {
+                throw new IllegalArgumentException(
+                    "Una vacunación independiente no requiere consulta médica"
+                );
+            }
+        } else if (attention.requiresMedicalConsultation()) {
+            if (r.consultationId() == null) {
+                throw new IllegalArgumentException(
+                    "Indique la consulta para vacunar durante una atención médica"
+                );
+            }
+
+            MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+            if (consultation.petId() != r.petId() ||
+                consultation.attentionId() != attention.getId()) {
+                throw new IllegalArgumentException(
+                    "La consulta no pertenece a esta atención y mascota"
+                );
+            }
+        } else {
+            throw new IllegalStateException(
+                "Este tipo de atención no permite registrar vacunaciones"
+            );
+        }
+
+        Vaccination saved = treatments.saveVaccination(
+            new Vaccination(
+                0, r.petId(), r.consultationId(), attention.getId(),
+                r.vaccine(), r.dose(), LocalDateTime.now(),
+                r.nextDoseDate(), actor.id()
+            )
+        );
+
+        if ("VACCINATION".equals(attention.getType())) {
+            attention.markVaccinationCompleted();
+            attentions.save(attention);
+        }
+
+        if (r.nextDoseDate() != null) {
+            followUps.scheduleFollowUp(
+                new FollowUpRequest(
+                    r.petId(), r.consultationId(),
+                    "Próxima dosis de " + r.vaccine(),
+                    r.nextDoseDate().atTime(9, 0), null
+                )
+            );
+        }
+
+        return saved;
+    }
+
+    @Transactional
+    public Referral registerReferral(ReferralRequest r) {
+        Actor actor = vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.reason() == null || r.reason().isBlank()) {
+            throw new IllegalArgumentException("Indique motivo de derivación");
+        }
+
+        return treatments.saveReferral(
+            new Referral(
+                0, consultation.id(), r.reason(), r.destination(),
+                LocalDateTime.now(), actor.id()
+            )
+        );
+    }
+
+    public java.util.List<MedicationDetail> getMedicationOptions(String search) {
+        vet();
+        return medications.search(search == null ? "" : search);
+    }
+
+    private Actor vet() {
+        return ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+    }
+
+    private MedicalConsultation activeConsultation(long id) {
+        MedicalConsultation consultation = records.findConsultation(id);
+
+        if (consultation == null || "COMPLETED".equals(consultation.status())) {
+            throw new IllegalStateException("Consulta no disponible");
+        }
+
+        return consultation;
+    }
+}
+```
+
+No se ha creado un VaccinationService adicional. La operación continúa perteneciendo a TreatmentService, como establece el diagrama, y utiliza TreatmentRepositoryPort y AttentionRepositoryPort para coordinar la transacción.
+
+### **4.3. PatientUpdateService.java**
+
+Ruta: `clinical/service/implementation/PatientUpdateService.java`
+
+Esta corrección evita que una propiedad opcional desaparezca simplemente porque el frontend no la envió.
+
+Si breed, sex, birthDate o estimatedAgeMonths llegan como null, conservamos sus valores anteriores.
+
+También se permite conservar ownerId, name y species cuando no se proporcionan nuevos valores.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.PatientUpdateUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class PatientUpdateService implements PatientUpdateUseCase {
+
+    private final PatientRepositoryPort patients;
+    private final PatientUpdatePort updates;
+    private final OwnerLookupPort owners;
+    private final ActorPort actors;
+
+    public PatientUpdateService(
+        PatientRepositoryPort patients,
+        PatientUpdatePort updates,
+        OwnerLookupPort owners,
+        ActorPort actors
+    ) {
+        this.patients = patients;
+        this.updates = updates;
+        this.owners = owners;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public Pet updatePet(long id, PetRequest request) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        Pet current = patients.findById(id);
+
+        if (current == null) {
+            throw new IllegalArgumentException("Mascota inexistente");
+        }
+
+        if (request == null) {
+            throw new IllegalArgumentException("Indique los datos de la mascota");
+        }
+
+        if ((request.name() != null && request.name().isBlank()) ||
+            (request.species() != null && request.species().isBlank()) ||
+            (request.estimatedAgeMonths() != null && request.estimatedAgeMonths() < 0)) {
+            throw new IllegalArgumentException("Datos de mascota inválidos");
+        }
+
+        long ownerId = request.ownerId() > 0 ? request.ownerId() : current.ownerId();
+        String name = request.name() != null ? request.name().trim() : current.name();
+        String species = request.species() != null ? request.species().trim() : current.species();
+        String breed = request.breed() != null ? request.breed() : current.breed();
+        String sex = request.sex() != null ? request.sex() : current.sex();
+        var birthDate = request.birthDate() != null ? request.birthDate() : current.birthDate();
+        Integer age = request.estimatedAgeMonths() != null
+            ? request.estimatedAgeMonths() : current.estimatedAgeMonths();
+
+        if (!owners.existsOwner(ownerId)) {
+            throw new IllegalArgumentException("Propietario inexistente");
+        }
+
+        if (birthDate == null && age == null) {
+            throw new IllegalArgumentException(
+                "Indique fecha de nacimiento o edad aproximada"
+            );
+        }
+
+        Pet changed = new Pet(
+            id, ownerId, name, species, breed, sex, birthDate, age
+        );
+
+        return updates.update(id, changed);
+    }
+}
+```
+
+No cambiaremos SqlPatientUpdateAdapter. Ese adaptador sigue guardando la entidad recibida, pero ahora recibe los campos previamente combinados con los datos existentes.
+
+Esta solución protege los campos omitidos. Todavía no implementa una distinción explícita entre omitir un campo y solicitar eliminar su valor, ni control de concurrencia sobre Pet; esas capacidades requerirían ampliar el contrato de actualización.
+
+## **5. Adaptadores SQL modificados**
+
+### **5.1. SqlClinicalMappers.java**
+
+Ruta: `clinical/infrastructure/output/persistence/SqlClinicalMappers.java`
+
+Se actualizan los mapeadores de ClinicalAttention y Vaccination para reconstruir los nuevos campos desde SQL Server.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import org.springframework.jdbc.core.RowMapper;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+
+final class SqlClinicalMappers {
+
+    private SqlClinicalMappers() {}
+
+    static Long nullableLong(ResultSet result, String column)
+        throws SQLException {
+        long value = result.getLong(column);
+        return result.wasNull() ? null : value;
+    }
+
+    static LocalDateTime dateTime(ResultSet result, String column)
+        throws SQLException {
+        var timestamp = result.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toLocalDateTime();
+    }
+
+    static final RowMapper<Pet> PET = (r, n) -> new Pet(
+        r.getLong("id"), r.getLong("owner_id"), r.getString("name"),
+        r.getString("species"), r.getString("breed"), r.getString("sex"),
+        r.getDate("birth_date") == null
+            ? null : r.getDate("birth_date").toLocalDate(),
+        (Integer) r.getObject("estimated_age_months")
+    );
+
+    static final RowMapper<ClinicalAttention> ATTENTION = (r, n) ->
+        new ClinicalAttention(
+            r.getLong("id"), r.getLong("pet_id"), r.getString("type"),
+            (Integer) r.getObject("priority"),
+            r.getString("urgency_description"),
+            nullableLong(r, "priority_assigned_by"), r.getString("state"),
+            dateTime(r, "arrived_at"), r.getBoolean("requires_grooming"),
+            r.getBoolean("clinical_closed"), nullableLong(r, "consultation_id"),
+            r.getBoolean("vaccination_completed"), r.getLong("version")
+        );
+
+    static final RowMapper<MedicalConsultation> CONSULTATION = (r, n) ->
+        new MedicalConsultation(
+            r.getLong("id"), r.getLong("attention_id"),
+            r.getLong("pet_id"), r.getLong("veterinarian_id"),
+            r.getString("reason"), r.getBigDecimal("weight"),
+            r.getString("symptoms"), r.getString("observations"),
+            r.getString("status"), dateTime(r, "created_at")
+        );
+
+    static final RowMapper<Diagnosis> DIAGNOSIS = (r, n) -> new Diagnosis(
+        r.getLong("id"), r.getLong("consultation_id"),
+        r.getString("description"), r.getString("indications"),
+        r.getLong("author_id"), dateTime(r, "created_at")
+    );
+
+    static final RowMapper<Treatment> TREATMENT = (r, n) -> new Treatment(
+        r.getLong("id"), r.getLong("consultation_id"),
+        r.getString("description"), r.getString("instructions"),
+        nullableLong(r, "product_id"), dateTime(r, "prescribed_at"),
+        r.getLong("author_id")
+    );
+
+    static final RowMapper<ClinicalProcedure> PROCEDURE = (r, n) ->
+        new ClinicalProcedure(
+            r.getLong("id"), r.getLong("consultation_id"),
+            r.getString("name"), r.getString("observations"),
+            dateTime(r, "performed_at"), r.getLong("author_id")
+        );
+
+    static final RowMapper<Vaccination> VACCINATION = (r, n) ->
+        new Vaccination(
+            r.getLong("id"), r.getLong("pet_id"),
+            nullableLong(r, "consultation_id"), nullableLong(r, "attention_id"),
+            r.getString("vaccine"), r.getString("dose"),
+            dateTime(r, "applied_at"),
+            r.getDate("next_dose_date") == null
+                ? null : r.getDate("next_dose_date").toLocalDate(),
+            r.getLong("veterinarian_id")
+        );
+
+    static final RowMapper<Referral> REFERRAL = (r, n) -> new Referral(
+        r.getLong("id"), r.getLong("consultation_id"),
+        r.getString("reason"), r.getString("destination"),
+        dateTime(r, "created_at"), r.getLong("author_id")
+    );
+
+    static final RowMapper<Appointment> APPOINTMENT = (r, n) ->
+        new Appointment(
+            r.getLong("id"), r.getLong("pet_id"),
+            r.getLong("professional_id"), r.getString("reason"),
+            dateTime(r, "starts_at"), dateTime(r, "ends_at"),
+            r.getString("status"), r.getString("specialty"),
+            nullableLong(r, "consultation_id"), dateTime(r, "created_at"),
+            r.getBoolean("reminder_sent")
+        );
+
+    static final RowMapper<FollowUp> FOLLOWUP = (r, n) -> new FollowUp(
+        r.getLong("id"), r.getLong("pet_id"),
+        nullableLong(r, "consultation_id"), r.getString("reason"),
+        dateTime(r, "due_at"), r.getString("status"),
+        dateTime(r, "reviewed_at"), nullableLong(r, "appointment_id")
+    );
+}
+```
+
+### **5.2. SqlAttentionAdapter.java**
+
+Ruta: `clinical/infrastructure/output/persistence/SqlAttentionAdapter.java`
+
+Este archivo incorpora la corrección de concurrencia.
+
+En cada actualización, SQL Server compara la versión que leyó el servicio con la versión que todavía existe en la base.
+
+Si ambas coinciden, actualiza la fila e incrementa version.
+
+Si otro usuario ya modificó el registro, el UPDATE afecta cero filas y se devuelve un conflicto. No se sobrescribe silenciosamente la información del otro usuario.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.AttentionRepositoryPort;
+
+@Repository
+public class SqlAttentionAdapter implements AttentionRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlAttentionAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public ClinicalAttention save(ClinicalAttention attention) {
+        if (attention.getId() == 0) {
+            Long id = jdbc.queryForObject(
+                "INSERT INTO dbo.ClinicalAttention " +
+                "(pet_id,type,priority,urgency_description," +
+                "priority_assigned_by,state,arrived_at,requires_grooming," +
+                "clinical_closed,consultation_id,vaccination_completed) " +
+                "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                Long.class,
+                attention.getPetId(), attention.getType(), attention.getPriority(),
+                attention.getUrgencyDescription(), attention.getPriorityAssignedBy(),
+                attention.getStatus(), attention.getArrivedAt(),
+                attention.isRequiresGrooming(), attention.isClinicalClosed(),
+                attention.getConsultationId(), attention.isVaccinationCompleted()
+            );
+            attention.setId(id);
+        } else {
+            int affected = jdbc.update(
+                "UPDATE dbo.ClinicalAttention SET " +
+                "type=?,priority=?,urgency_description=?," +
+                "priority_assigned_by=?,state=?,arrived_at=?," +
+                "requires_grooming=?,clinical_closed=?,consultation_id=?," +
+                "vaccination_completed=?,[version]=[version]+1 " +
+                "WHERE id=? AND [version]=?",
+                attention.getType(), attention.getPriority(),
+                attention.getUrgencyDescription(), attention.getPriorityAssignedBy(),
+                attention.getStatus(), attention.getArrivedAt(),
+                attention.isRequiresGrooming(), attention.isClinicalClosed(),
+                attention.getConsultationId(), attention.isVaccinationCompleted(),
+                attention.getId(), attention.getVersion()
+            );
+
+            if (affected != 1) {
+                throw new IllegalStateException(
+                    "La atención fue modificada por otro usuario. Recargue y reintente"
+                );
+            }
+
+            attention.incrementVersion();
+        }
+
+        return attention;
+    }
+
+    public ClinicalAttention findById(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAttention WHERE id=?",
+            SqlClinicalMappers.ATTENTION, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public ClinicalAttention findOpenByPet(long petId) {
+        return jdbc.query(
+            "SELECT TOP 1 * FROM dbo.ClinicalAttention " +
+            "WHERE pet_id=? AND state<>'ATENDIDO' ORDER BY id DESC",
+            SqlClinicalMappers.ATTENTION, petId
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<ClinicalAttention> findWaiting() {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAttention " +
+            "WHERE state='EN_ESPERA' AND arrived_at IS NOT NULL " +
+            "ORDER BY CASE WHEN priority IS NULL THEN 1 ELSE 0 END, " +
+            "priority, arrived_at",
+            SqlClinicalMappers.ATTENTION
+        );
+    }
+
+    public void auditPriority(long attentionId, long veterinarianId, int priority) {
+        jdbc.update(
+            "INSERT INTO dbo.ClinicalPriorityAudit " +
+            "(attention_id,veterinarian_id,priority) VALUES(?,?,?)",
+            attentionId, veterinarianId, priority
+        );
+    }
+}
+```
+
+Esta modificación no requiere cambiar AttentionRepositoryPort ni los métodos de los controladores.
+
+El error de concurrencia sigue siendo una IllegalStateException, que nuestro ClinicalErrorHandler existente convierte en HTTP 409 Conflict.
+
+Por ejemplo, si dos profesionales intentan modificar la misma atención:
+
+```
+Versión inicial: 5
+
+Veterinario A:
+    Lee versión 5.
+    Modifica prioridad.
+    Guarda correctamente.
+    Nueva versión: 6.
+
+Veterinario B:
+    Había leído versión 5.
+    Intenta cambiar el estado.
+    SQL busca id = 10 y version = 5.
+    No encuentra coincidencia.
+    Recibe HTTP 409 Conflict.
+
+Resultado:
+    No se pierde la modificación de A.
+    B debe recargar la atención.
+```
+
+El sistema tampoco reintenta automáticamente una transición clínica sobre una versión nueva: eso requeriría reevaluar las reglas de negocio con el estado actualizado.
+
+### **5.3. SqlTreatmentAdapter.java**
+
+Ruta: `clinical/infrastructure/output/persistence/SqlTreatmentAdapter.java`
+
+La modificación de persistencia consiste en guardar attentionId junto con cada vacunación.
+
+El resto de métodos conserva sus contratos originales.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.time.LocalDate;
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.TreatmentRepositoryPort;
+
+@Repository
+public class SqlTreatmentAdapter implements TreatmentRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlTreatmentAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Treatment saveTreatment(Treatment treatment) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalTreatment " +
+            "(consultation_id,description,instructions,product_id," +
+            "prescribed_at,author_id) OUTPUT INSERTED.id " +
+            "VALUES(?,?,?,?,?,?)",
+            Long.class,
+            treatment.consultationId(), treatment.description(),
+            treatment.instructions(), treatment.productId(),
+            treatment.prescribedAt(), treatment.authorId()
+        );
+
+        return new Treatment(
+            id, treatment.consultationId(), treatment.description(),
+            treatment.instructions(), treatment.productId(),
+            treatment.prescribedAt(), treatment.authorId()
+        );
+    }
+
+    public ClinicalProcedure saveProcedure(ClinicalProcedure procedure) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalProcedure " +
+            "(consultation_id,name,observations,performed_at,author_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?)",
+            Long.class,
+            procedure.consultationId(), procedure.name(),
+            procedure.observations(), procedure.performedAt(),
+            procedure.authorId()
+        );
+
+        return new ClinicalProcedure(
+            id, procedure.consultationId(), procedure.name(),
+            procedure.observations(), procedure.performedAt(),
+            procedure.authorId()
+        );
+    }
+
+    public Vaccination saveVaccination(Vaccination vaccination) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalVaccination " +
+            "(pet_id,consultation_id,attention_id,vaccine,dose,applied_at," +
+            "next_dose_date,veterinarian_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?,?,?,?)",
+            Long.class,
+            vaccination.petId(), vaccination.consultationId(),
+            vaccination.attentionId(), vaccination.vaccine(), vaccination.dose(),
+            vaccination.appliedAt(), vaccination.nextDoseDate(),
+            vaccination.veterinarianId()
+        );
+
+        return new Vaccination(
+            id, vaccination.petId(), vaccination.consultationId(),
+            vaccination.attentionId(), vaccination.vaccine(), vaccination.dose(),
+            vaccination.appliedAt(), vaccination.nextDoseDate(),
+            vaccination.veterinarianId()
+        );
+    }
+
+    public Referral saveReferral(Referral referral) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalReferral " +
+            "(consultation_id,reason,destination,created_at,author_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?)",
+            Long.class,
+            referral.consultationId(), referral.reason(),
+            referral.destination(), referral.createdAt(),
+            referral.authorId()
+        );
+
+        return new Referral(
+            id, referral.consultationId(), referral.reason(),
+            referral.destination(), referral.createdAt(),
+            referral.authorId()
+        );
+    }
+
+    public List<Treatment> listTreatmentsByPet(long petId) {
+        return jdbc.query(
+            "SELECT t.* FROM dbo.ClinicalTreatment t " +
+            "JOIN dbo.MedicalConsultation c ON c.id=t.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY t.prescribed_at DESC",
+            SqlClinicalMappers.TREATMENT, petId
+        );
+    }
+
+    public List<ClinicalProcedure> listProceduresByPet(long petId) {
+        return jdbc.query(
+            "SELECT p.* FROM dbo.ClinicalProcedure p " +
+            "JOIN dbo.MedicalConsultation c ON c.id=p.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY p.performed_at DESC",
+            SqlClinicalMappers.PROCEDURE, petId
+        );
+    }
+
+    public List<Referral> listReferralsByPet(long petId) {
+        return jdbc.query(
+            "SELECT r.* FROM dbo.ClinicalReferral r " +
+            "JOIN dbo.MedicalConsultation c ON c.id=r.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY r.created_at DESC",
+            SqlClinicalMappers.REFERRAL, petId
+        );
+    }
+
+    public List<Vaccination> listVaccinations(long petId) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalVaccination " +
+            "WHERE pet_id=? ORDER BY applied_at DESC",
+            SqlClinicalMappers.VACCINATION, petId
+        );
+    }
+
+    public List<LocalDate> findPendingDoses(LocalDate date) {
+        return jdbc.query(
+            "SELECT next_dose_date FROM dbo.ClinicalVaccination " +
+            "WHERE next_dose_date<=?",
+            (r, n) -> r.getDate(1).toLocalDate(),
+            date
+        );
+    }
+}
+```
+
+## **6. Migración de SQL Server**
+
+Archivo: `src/main/resources/db/clinical-fix.sql`
+
+Este script modifica exclusivamente las tablas ClinicalAttention y ClinicalVaccination creadas anteriormente.
+
+No elimina registros ni recrea las tablas.
+
+Debes ejecutarlo después del script clínico original, mediante SQL Server Management Studio o sqlcmd.
+
+```
+-- Campos adicionales para el cierre de vacunación.
+
+IF COL_LENGTH('dbo.ClinicalAttention', 'vaccination_completed') IS NULL
+BEGIN
+    ALTER TABLE dbo.ClinicalAttention
+    ADD vaccination_completed BIT NOT NULL
+        CONSTRAINT DF_ClinicalAttention_VaccinationCompleted
+        DEFAULT (0);
+END;
+GO
+
+-- Control de concurrencia optimista.
+
+IF COL_LENGTH('dbo.ClinicalAttention', 'version') IS NULL
+BEGIN
+    ALTER TABLE dbo.ClinicalAttention
+    ADD [version] BIGINT NOT NULL
+        CONSTRAINT DF_ClinicalAttention_Version
+        DEFAULT (0);
+END;
+GO
+
+-- Asociación entre vacunación y atención.
+
+IF COL_LENGTH('dbo.ClinicalVaccination', 'attention_id') IS NULL
+BEGIN
+    ALTER TABLE dbo.ClinicalVaccination
+    ADD attention_id BIGINT NULL;
+END;
+GO
+
+-- Integridad referencial.
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys
+    WHERE name = 'FK_ClinicalVaccination_Attention'
+      AND parent_object_id = OBJECT_ID('dbo.ClinicalVaccination')
+)
+BEGIN
+    ALTER TABLE dbo.ClinicalVaccination WITH CHECK
+    ADD CONSTRAINT FK_ClinicalVaccination_Attention
+    FOREIGN KEY (attention_id)
+    REFERENCES dbo.ClinicalAttention(id);
+END;
+GO
+
+-- Índice de consulta por atención.
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_ClinicalVaccination_Attention'
+      AND object_id = OBJECT_ID('dbo.ClinicalVaccination')
+)
+BEGIN
+    CREATE INDEX IX_ClinicalVaccination_Attention
+    ON dbo.ClinicalVaccination(attention_id);
+END;
+GO
+```
+
+Se han utilizado valores predeterminados para conservar la compatibilidad con los registros anteriores: version comienza en 0 y vaccination_completed comienza en false.
+
+Si ya existen vacunaciones registradas antes de esta migración, sus asociaciones con las atenciones deben revisarse antes de considerarlas finalizadas. El script no marcará automáticamente vacunas históricas como completadas.
+
+## **7. Flujo completo de vacunación**
+
+No necesitamos modificar VaccinationWorkflow\.java ni VaccinationRequest.java: sus firmas actuales siguen siendo compatibles.
+
+El controlador TreatmentController también permanece igual porque continúa llamando a TreatmentUseCase.registerVaccination().
+
+El flujo para una vacunación independiente queda así.
+
+### **Paso 1. Registrar llegada**
+
+`POST /api/clinical/attentions/arrivals`
+
+```
+{
+  "petId": 1,
+  "type": "VACCINATION",
+  "requiresGrooming": false
+}
+```
+
+La respuesta devuelve ClinicalAttention con el identificador generado y el estado EN_ESPERA.
+
+### **Paso 2. Iniciar vacunación**
+
+`PUT /api/clinical/attentions/1/start`
+
+El veterinario inicia el procedimiento, que utiliza VaccinationWorkflow para avanzar a ATENDIENDOSE.
+
+### **Paso 3. Registrar vacuna aplicada**
+
+`POST /api/clinical/treatments/vaccinations`
+
+```
+{
+  "petId": 1,
+  "consultationId": null,
+  "vaccine": "Vacuna de ejemplo",
+  "dose": "1 dosis",
+  "nextDoseDate": "2027-11-16"
+}
+```
+
+TreatmentService guarda la vacunación, la asocia con la atención abierta y establece vaccinationCompleted en true.
+
+Si corresponde, también crea el seguimiento para la próxima dosis.
+
+### **Paso 4. Finalizar procedimiento**
+
+`PUT /api/clinical/attentions/1/advance`
+
+InProgressState comprueba que vaccinationCompleted sea true y permite avanzar a LISTO_RECOJO.
+
+No exige diagnóstico médico.
+
+### **Paso 5. Registrar retiro**
+
+`PUT /api/clinical/attentions/1/pickup`
+
+La atención pasa a ATENDIDO.
+
+Los identificadores de los endpoints son ilustrativos: deben utilizarse los devueltos por las operaciones anteriores y el usuario debe contar con los permisos correspondientes.
+
+## **8. Verificación realizada**
+
+He comprobado las dependencias entre las diez clases modificadas y los contratos anteriores mediante una compilación aislada en JDK 21, utilizando sustitutos de las API de Spring para verificar las firmas Java.
+
+También ejecuté 17 comprobaciones de lógica, que incluyeron:
+
+| Comprobación                                                        | Resultado |
+| ------------------------------------------------------------------- | --------- |
+| Impedir vacunación sin registrar llegada                            | Correcto  |
+| Impedir cierre de vacunación sin registrar vacuna                   | Correcto  |
+| Permitir vacunación sin diagnóstico                                 | Correcto  |
+| Pasar vacunación a LISTO_RECOJO                                     | Correcto  |
+| Finalizar vacunación en ATENDIDO                                    | Correcto  |
+| Mantener cierre obligatorio de consulta médica                      | Correcto  |
+| Conservar la secuencia de baño y peluquería como servicio adicional | Correcto  |
+| Rechazar Grooming independiente sin flujo habilitado                | Correcto  |
+| Rechazar actualizaciones con versión obsoleta                       | Correcto  |
+| Incrementar version tras actualización exitosa                      | Correcto  |
+| Preservar campos opcionales omitidos en actualización de mascota    | Correcto  |
+
+Estas comprobaciones no sustituyen una ejecución real de Spring Boot con SQL Server. La migración tampoco se ha ejecutado sobre tu base de datos.
+
+## **9. Qué permanece pendiente y qué no cambia**
+
+Hay dos aspectos que mantengo expresamente fuera de esta corrección.
+
+Primero, el módulo Commercial todavía debe definir cómo se factura o cobra una vacunación independiente. Como esta no tiene consultationId, el mecanismo comercial actual basado en consultas no basta para comprobar su pago. El código permite registrar el retiro clínico, pero no garantiza que esa vacunación haya sido cobrada. Esto debe resolverse antes de utilizarlo como control de caja en producción.
+
+Segundo, no hemos incorporado un cierre administrativo automático de atenciones antiguas ni paginación al historial clínico. La primera decisión evita alterar registros clínicos sin intervención autorizada; la segunda corresponde a una optimización posterior.
+
+Tampoco necesitamos modificar PatientController, AttentionController, ConsultationController, TreatmentController, AppointmentController, los puertos existentes ni las otras clases State.
+
+### **Resultado**
+
+Con estas sustituciones, conservamos el diseño hexagonal y corregimos el bloqueo que obligaba a inventar consultas y diagnósticos para registrar vacunaciones.
+
+State sigue siendo una única máquina de estados, pero las condiciones para avanzar dependen del tipo de atención.
+
+Además, el control de versión impide que una actualización clínica sobrescriba silenciosamente otra realizada previamente, y las modificaciones de mascotas conservan los campos opcionales que el frontend haya omitido.
+
+El único ajuste documental que recomiendo dejar registrado es que RN-06 se aplica al cierre de consultas médicas; las vacunaciones independientes se finalizan verificando su registro de aplicación. Así el SRS y el código no describirán reglas contradictorias.

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centro clínico | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Centro y configuración clínica</h1>
+            <p>Resumen operativo de recepción, atenciones activas, pendientes y parámetros clínicos.</p>
+        </header>
+
+        <section class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">En espera</div>
+                <div id="kpiWaiting" class="kpi-value">0</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">En atención / baño / peluquería</div>
+                <div id="kpiInProgress" class="kpi-value">0</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Listos para recojo</div>
+                <div id="kpiReady" class="kpi-value">0</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Seguimientos pendientes</div>
+                <div id="kpiFollowUps" class="kpi-value">0</div>
+            </div>
+        </section>
+
+        <section class="card">
+            <h3>Flujo operativo clínico</h3>
+            <div id="clinicalQuickLinks" class="quick-links">
+                <a href="/pacientes.html">Pacientes y ficha clínica</a>
+                <a href="/atenciones.html">Recepción y sala de espera</a>
+                <a href="/consultas.html">Atención clínica integral</a>
+                <a href="/citas.html">Agenda gráfica de citas</a>
+                <a href="/seguimientos.html">Pendientes y seguimientos</a>
+                <a href="/cobros-clinicos.html">Cobros clínicos en caja</a>
+            </div>
+        </section>
+
+        <div class="split-grid">
+            <section class="card">
+                <h3>Pacientes actualmente en clínica</h3>
+                <div class="table-wrap">
+                    <table id="hubAttentionsTable"></table>
+                </div>
+                <div class="actions">
+                    <a class="button-link outline" href="/atenciones.html">Abrir tablero de recepción</a>
+                </div>
+            </section>
+
+            <section class="card">
+                <h3>Próximos seguimientos pendientes</h3>
+                <div class="table-wrap">
+                    <table id="hubFollowUpsTable"></table>
+                </div>
+                <div class="actions">
+                    <a class="button-link outline" href="/seguimientos.html">Gestionar seguimientos</a>
+                </div>
+            </section>
+        </div>
+
+        <section id="clinicalConfigCard" class="card">
+            <h3>Configuración clínica</h3>
+            <div id="configRoleNotice" class="alert alert-info" hidden></div>
+
+            <div class="split-grid">
+                <div>
+                    <h4>Criterios orientativos de peso por especie</h4>
+                    <form id="weightPolicyForm">
+                        <div class="form-grid">
+                            <div class="field">
+                                <label>Especie</label>
+                                <select id="policySpecies" name="species" required>
+                                    <option value="CANINE">Perro (Canino)</option>
+                                    <option value="FELINE">Gato (Felino)</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label>Mínimo (kg)</label>
+                                <input name="minimum" type="number" step="0.01" min="0.01" required>
+                            </div>
+                            <div class="field">
+                                <label>Máximo (kg)</label>
+                                <input name="maximum" type="number" step="0.01" min="0.01" required>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button id="savePolicyBtn" type="submit">Guardar criterio</button>
+                        </div>
+                    </form>
+                    <p id="policyMessage" class="message"></p>
+                    <div class="table-wrap">
+                        <table id="policiesTable"></table>
+                    </div>
+                </div>
+
+                <div>
+                    <h4>Especialidades por profesional</h4>
+                    <form id="specialtyForm">
+                        <div class="form-grid">
+                            <div class="field">
+                                <label>Profesional clínico</label>
+                                <select id="specialtyProfessionalId" name="professionalId" required></select>
+                            </div>
+                            <div class="field">
+                                <label>Especialidad</label>
+                                <input id="specialtyInput" name="specialty" maxlength="150" placeholder="Ej. Dermatología, Cirugía" required>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button id="saveSpecialtyBtn" type="submit">Asignar especialidad</button>
+                        </div>
+                    </form>
+                    <p id="specialtyMessage" class="message"></p>
+                    <div class="table-wrap">
+                        <table id="specialtiesTable"></table>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("hub");</script>
+</body>
+</html>

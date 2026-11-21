@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ventas | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+
+    <style>
+        .customer-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .customer-row select {
+            flex: 1;
+        }
+
+        #newCustomerForm {
+            border-top: 1px solid #ddd;
+            margin-top: 20px;
+            padding-top: 20px;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Punto de venta</h1>
+            <p>Ventas por presentación, peso, volumen o unidades.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Datos de venta</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Cliente</label>
+
+                    <div class="customer-row">
+                        <select id="customerId"></select>
+                        <button type="button" id="newCustomerButton">+ Nuevo cliente</button>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label>Método de pago</label>
+                    <select id="paymentMethodId"></select>
+                </div>
+
+            </div>
+
+            <form id="newCustomerForm" hidden>
+
+                <h3>Registro rápido de cliente</h3>
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Tipo de documento</label>
+                        <select id="customerDocumentType">
+                            <option value="DNI">DNI</option>
+                            <option value="RUC">RUC</option>
+                            <option value="CE">Carné de extranjería</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Número de documento</label>
+                        <input id="customerDocumentNumber" required maxlength="20">
+                    </div>
+
+                    <div class="field full">
+                        <label>Nombre completo o razón social</label>
+                        <input id="customerFullName" required maxlength="100">
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit" id="saveCustomerButton">Guardar cliente</button>
+                    <button type="button" class="secondary" id="cancelCustomerButton">Cancelar</button>
+                </div>
+
+            </form>
+
+            <p id="customerMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Agregar producto</h3>
+
+            <div class="form-grid">
+
+                <div class="field">
+                    <label>Producto</label>
+                    <select id="productId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Presentación</label>
+                    <select id="presentationId"></select>
+                </div>
+
+                <div class="field">
+                    <label>Cantidad de presentaciones</label>
+                    <input id="quantity" type="number" min="1" value="1">
+                </div>
+
+                <div class="field">
+                    <label>
+                        <input id="fractionalMode" type="checkbox" style="width:auto">
+                        Venta fraccionada
+                    </label>
+                </div>
+
+                <div class="field" id="fractionField" hidden>
+                    <label id="fractionLabel">Cantidad solicitada</label>
+                    <input id="requestedBaseQuantity" type="number" min="1">
+                </div>
+
+            </div>
+
+            <p id="conversionPreview" class="muted"></p>
+            <p id="pricePreview" class="summary"></p>
+
+            <div class="actions">
+                <button type="button" id="addItemButton">Agregar a venta</button>
+            </div>
+
+            <p id="itemMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Detalle de venta</h3>
+
+            <div class="table-wrap">
+                <table id="itemsTable"></table>
+            </div>
+
+            <p class="summary" id="total">Total referencial: S/ 0.00</p>
+
+            <div class="actions">
+                <button type="button" id="confirmButton">Confirmar venta</button>
+                <button type="button" id="clearButton" class="secondary">Nueva venta</button>
+            </div>
+
+            <p id="saleMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Historial de ventas</h3>
+
+            <button type="button" id="refreshButton">Actualizar historial</button>
+
+            <div class="table-wrap">
+                <table id="salesTable"></table>
+            </div>
+
+            <p id="historyMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let products = [];
+    let presentations = [];
+    let items = [];
+    let operationKey = Sisvet.operationKey();
+
+    function fillSelect(id, data, getLabel) {
+
+        const select = document.getElementById(id);
+        select.replaceChildren();
+
+        for (const item of data) {
+            select.add(new Option(getLabel(item), item.id));
+        }
+    }
+
+    function selectedProduct() {
+
+        const id = Number(document.getElementById("productId").value);
+
+        return products.find(p => p.id === id);
+    }
+
+    function selectedPresentation() {
+
+        const id = Number(document.getElementById("presentationId").value);
+
+        return presentations.find(p => p.id === id);
+    }
+
+    async function loadData() {
+
+        try {
+
+            const [customers, productList, methods] = await Promise.all([
+                Sisvet.api("/api/customers"),
+                Sisvet.api("/api/products"),
+                Sisvet.api("/api/payment-methods")
+            ]);
+
+            products = productList;
+
+            fillSelect("customerId", customers, c => c.fullName + " (" + c.documentNumber + ")");
+            fillSelect("productId", products, p => p.name);
+            fillSelect("paymentMethodId", methods, m => m.name);
+
+            await loadPresentations();
+
+        } catch (error) {
+            Sisvet.showError("saleMessage", error);
+        }
+    }
+
+    async function loadPresentations() {
+
+        const product = selectedProduct();
+
+        if (!product) return;
+
+        try {
+
+            presentations = await Sisvet.api(
+                "/api/products/" + product.id + "/presentations"
+            );
+
+            fillSelect("presentationId", presentations, p =>
+                p.name + " - " + Sisvet.money(p.salePrice)
+            );
+
+            document.getElementById("fractionalMode").checked = false;
+
+            updateConversion();
+
+        } catch (error) {
+            Sisvet.showError("itemMessage", error);
+        }
+    }
+
+    function updateConversion() {
+
+        const product = selectedProduct();
+        const presentation = selectedPresentation();
+
+        if (!product || !presentation) return;
+
+        const fractional = document.getElementById("fractionalMode");
+        const quantityInput = document.getElementById("quantity");
+        const fractionField = document.getElementById("fractionField");
+
+        fractional.disabled = !presentation.fractionable;
+
+        if (!presentation.fractionable) {
+            fractional.checked = false;
+        }
+
+        const useFraction = fractional.checked;
+
+        fractionField.hidden = !useFraction;
+        quantityInput.disabled = useFraction;
+
+        document.getElementById("fractionLabel").textContent =
+            "Cantidad solicitada (" + product.baseUnit + ")";
+
+        const quantity = Number(quantityInput.value);
+        const requested = Number(document.getElementById("requestedBaseQuantity").value);
+
+        const baseQuantity = useFraction
+            ? requested
+            : quantity * presentation.quantityInBase;
+
+        const valid = Number.isInteger(baseQuantity) && baseQuantity > 0;
+
+        if (!valid) {
+            document.getElementById("conversionPreview").textContent = "";
+            document.getElementById("pricePreview").textContent = "";
+            return;
+        }
+
+        const amount = useFraction
+            ? Math.round(Number(presentation.salePrice) * baseQuantity
+                / presentation.quantityInBase * 100) / 100
+            : quantity * Number(presentation.salePrice);
+
+        let physicalQuantity = baseQuantity + " unidades";
+
+        if (product.baseUnit === "G") {
+            physicalQuantity = baseQuantity + " g (" + baseQuantity / 1000 + " kg)";
+        }
+
+        if (product.baseUnit === "ML") {
+            physicalQuantity = baseQuantity + " ml (" + baseQuantity / 1000 + " L)";
+        }
+
+        document.getElementById("conversionPreview").textContent =
+            "Cantidad física: " + physicalQuantity;
+
+        document.getElementById("pricePreview").textContent =
+            "Subtotal referencial: " + Sisvet.money(amount);
+    }
+
+    document.getElementById("newCustomerButton").addEventListener("click", () => {
+
+        const form = document.getElementById("newCustomerForm");
+        form.hidden = !form.hidden;
+    });
+
+    document.getElementById("cancelCustomerButton").addEventListener("click", () => {
+        document.getElementById("newCustomerForm").hidden = true;
+    });
+
+    document.getElementById("newCustomerForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const button = document.getElementById("saveCustomerButton");
+
+        const request = {
+            documentType: document.getElementById("customerDocumentType").value,
+            documentNumber: document.getElementById("customerDocumentNumber").value.trim(),
+            fullName: document.getElementById("customerFullName").value.trim(),
+            phone: "",
+            email: "",
+            address: ""
+        };
+
+        button.disabled = true;
+
+        try {
+
+            const customer = await Sisvet.api("/api/customers", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            const select = document.getElementById("customerId");
+
+            select.add(new Option(
+                customer.fullName + " (" + customer.documentNumber + ")",
+                customer.id
+            ));
+
+            select.value = String(customer.id);
+
+            event.target.reset();
+            event.target.hidden = true;
+
+            Sisvet.message("customerMessage", "Cliente registrado y seleccionado.");
+
+        } catch (error) {
+            Sisvet.showError("customerMessage", error);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    document.getElementById("addItemButton").addEventListener("click", () => {
+
+        const product = selectedProduct();
+        const presentation = selectedPresentation();
+
+        if (!product || !presentation) {
+            Sisvet.message("itemMessage", "Selecciona un producto y presentación.", true);
+            return;
+        }
+
+        const fractional = document.getElementById("fractionalMode").checked;
+        const quantity = fractional ? 1 : Number(document.getElementById("quantity").value);
+
+        const requestedBaseQuantity = fractional
+            ? Number(document.getElementById("requestedBaseQuantity").value)
+            : null;
+
+        const baseQuantity = fractional
+            ? requestedBaseQuantity
+            : quantity * presentation.quantityInBase;
+
+        if (!Number.isInteger(quantity) || quantity <= 0 ||
+                !Number.isSafeInteger(baseQuantity) || baseQuantity <= 0 ||
+                baseQuantity > 2147483647) {
+
+            Sisvet.message("itemMessage", "La cantidad es inválida.", true);
+            return;
+        }
+
+        if (fractional && !presentation.fractionable) {
+            Sisvet.message("itemMessage", "La presentación no admite fraccionamiento.", true);
+            return;
+        }
+
+        if (items.some(item => item.presentationId === presentation.id)) {
+            Sisvet.message("itemMessage", "La presentación ya está agregada.", true);
+            return;
+        }
+
+        const reserved = items
+            .filter(item => item.productId === product.id)
+            .reduce((sum, item) => sum + item.baseQuantity, 0);
+
+        if (baseQuantity > product.stock - reserved) {
+            Sisvet.message("itemMessage", "Stock insuficiente.", true);
+            return;
+        }
+
+        const unitPrice = fractional
+            ? Math.round(Number(presentation.salePrice) * baseQuantity
+                / presentation.quantityInBase * 100) / 100
+            : Number(presentation.salePrice);
+
+        if (unitPrice <= 0) {
+            Sisvet.message("itemMessage", "El importe es demasiado pequeño.", true);
+            return;
+        }
+
+        items.push({
+            productId: product.id,
+            presentationId: presentation.id,
+            productName: product.name,
+            presentationName: presentation.name,
+            baseUnit: product.baseUnit,
+            quantity,
+            requestedBaseQuantity,
+            baseQuantity,
+            unitPrice
+        });
+
+        renderItems();
+
+        Sisvet.message("itemMessage", "Producto agregado.");
+    });
+
+    function renderItems() {
+
+        Sisvet.renderTable("itemsTable", items, [
+            { label: "Producto", value: i => i.productName },
+            { label: "Presentación", value: i => i.presentationName },
+            { label: "Cantidad", value: i => i.quantity },
+            { label: "Cantidad física", value: i => i.baseQuantity + " " + i.baseUnit },
+            { label: "Precio", value: i => Sisvet.money(i.unitPrice) },
+            { label: "Subtotal", value: i => Sisvet.money(i.unitPrice * i.quantity) }
+        ]);
+
+        const total = items.reduce(
+            (sum, item) => sum + item.unitPrice * item.quantity,
+            0
+        );
+
+        document.getElementById("total").textContent =
+            "Total referencial: " + Sisvet.money(total);
+    }
+
+    document.getElementById("clearButton").addEventListener("click", () => {
+
+        items = [];
+        operationKey = Sisvet.operationKey();
+
+        renderItems();
+        Sisvet.message("saleMessage", "");
+    });
+
+    document.getElementById("confirmButton").addEventListener("click", async () => {
+
+        if (items.length === 0) {
+            Sisvet.message("saleMessage", "La venta no tiene productos.", true);
+            return;
+        }
+
+        const button = document.getElementById("confirmButton");
+
+        const request = {
+            customerId: Number(document.getElementById("customerId").value),
+            paymentMethodId: Number(document.getElementById("paymentMethodId").value),
+            operationKey,
+            items: items.map(item => ({
+                productId: item.productId,
+                presentationId: item.presentationId,
+                quantity: item.quantity,
+                requestedBaseQuantity: item.requestedBaseQuantity
+            }))
+        };
+
+        button.disabled = true;
+
+        try {
+
+            const result = await Sisvet.api("/api/sales", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            items = [];
+            operationKey = Sisvet.operationKey();
+
+            renderItems();
+
+            Sisvet.message(
+                "saleMessage",
+                "Venta #" + result.saleId +
+                " confirmada. Total: " + Sisvet.money(result.totalAmount)
+            );
+
+            await loadData();
+            await loadSales();
+
+        } catch (error) {
+            Sisvet.showError("saleMessage", error);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    async function loadSales() {
+
+        try {
+
+            const sales = await Sisvet.api("/api/sales");
+
+            const columns = [
+                { label: "ID", value: s => s.id },
+                { label: "Fecha", value: s => s.saleDatetime },
+                { label: "Cliente ID", value: s => s.customerId },
+                { label: "Total", value: s => Sisvet.money(s.totalAmount) },
+                { label: "Estado", value: s => s.recordStatus }
+            ];
+
+            if (Sisvet.getUser()?.role === "Administrador") {
+
+                columns.push({
+                    label: "Margen bruto estimado",
+                    value: s => s.grossMargin == null
+                        ? "No disponible"
+                        : Sisvet.money(s.grossMargin)
+                });
+            }
+
+            Sisvet.renderTable("salesTable", sales, columns);
+
+        } catch (error) {
+            Sisvet.showError("historyMessage", error);
+        }
+    }
+
+    document.getElementById("productId").addEventListener("change", loadPresentations);
+    document.getElementById("presentationId").addEventListener("change", updateConversion);
+    document.getElementById("quantity").addEventListener("input", updateConversion);
+    document.getElementById("requestedBaseQuantity").addEventListener("input", updateConversion);
+    document.getElementById("fractionalMode").addEventListener("change", updateConversion);
+    document.getElementById("refreshButton").addEventListener("click", loadSales);
+
+    async function start() {
+
+        if (!await Sisvet.init("Ventas")) return;
+
+        await loadData();
+        await loadSales();
+        renderItems();
+    }
+
+    start();
+
+</script>
+</body>
+</html>

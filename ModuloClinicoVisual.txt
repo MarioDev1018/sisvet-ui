@@ -1,0 +1,355 @@
+Sí. Y después de revisar las capturas y el FD03 SRS que acabas de adjuntar, hay que reconocer algo: construí una interfaz demasiado orientada a los métodos del backend y muy poco orientada a cómo trabaja realmente una veterinaria.
+
+La arquitectura hexagonal puede estar bien y, aun así, la experiencia de usuario ser mala. Eso es precisamente lo que ocurrió aquí.
+
+Además, varias de tus observaciones no son simples preferencias: el propio SRS respalda lo que estás pidiendo.
+
+## **1. Propietarios: tienes razón, no deberían introducir un ID**
+
+En la pantalla de Clientes, el personal puede buscar por nombre o documento, pero ni siquiera se muestra el identificador interno del cliente.
+
+Después, en Pacientes, pedimos ese mismo identificador.
+
+Eso es un error de diseño.
+
+El CU-02 del SRS establece que recepción debe seleccionar al propietario y después registrar los datos de la mascota. No dice que el trabajador tenga que averiguar su clave primaria de SQL Server.
+
+El formulario correcto sería:
+
+- Buscar propietario por nombre o documento.
+- Mostrar una lista desplegable con resultados como «Hernando — DNI 12345672».
+- Seleccionar al propietario.
+- Registrar la mascota.
+
+Internamente, el navegador seguiría enviando ownerId al backend, pero ese identificador no tendría que ser introducido por el usuario.
+
+También sería conveniente colocar «Registrar nuevo propietario» junto al selector, reutilizando la funcionalidad de Commercial.
+
+Y exactamente el mismo criterio debería aplicarse a las mascotas: seleccionar «Luna — Hernando», no escribir «Mascota ID: 17».
+
+El identificador seguirá existiendo y debería ser visible en la ficha y las tablas para distinguir pacientes homónimos. Simplemente dejaría de ser el mecanismo principal de selección.
+
+## **2. El peso: el error no es que esté asociado a la consulta, sino cómo lo presentamos**
+
+Aquí el SRS aclara bastante el asunto.
+
+En la descripción del proceso actual se indica expresamente que recepción pesa al animal antes de que pase a consulta. Después, RF-12 exige registrar el peso en la consulta y RF-23 exige advertir sobre valores sospechosos.
+
+Por tanto, el peso tiene dos usos:
+
+- En la ficha de la mascota debe mostrarse su último peso conocido.
+- En cada atención debe conservarse el peso medido en esa fecha.
+
+¿Por qué? Porque el peso cambia.
+
+Si registramos únicamente un atributo weight dentro de Pet y lo sobrescribimos cada vez, perderíamos el historial.
+
+Por ejemplo, la ficha de Luna podría mostrar:
+
+| Fecha             | Peso    |
+| ----------------- | ------- |
+| Enero de 2026     | 12.4 kg |
+| Mayo de 2026      | 13.1 kg |
+| Noviembre de 2026 | 11.8 kg |
+
+El último peso visible sería 11.8 kg, pero el veterinario conservaría las mediciones anteriores.
+
+Por eso mantendría las mediciones asociadas a cada atención o consulta y mostraría el peso más reciente dentro de la ficha de la mascota.
+
+También movería el campo de pesaje inicial al flujo de recepción, tal como describe el SRS, y permitiría que el veterinario confirme o corrija esa medición durante la consulta.
+
+No debe existir una pantalla aislada que obligue a introducir el ID de la mascota solo para comprobar su peso.
+
+## **3. La advertencia de peso: actualmente no sabe cuál es el peso adecuado de un perro**
+
+Este es uno de los errores funcionales más evidentes.
+
+En el código actual tenemos una tabla ClinicalWeightPolicy con tres datos:
+
+- species
+- min_kg
+- max_kg
+
+Y SqlWeightPolicyAdapter.warning() ejecuta una búsqueda por coincidencia exacta de species.
+
+Es decir, si registras la mascota como «Perro» y configuras el rango como «Canino», no encontrará el registro.
+
+Peor todavía: si no encuentra ningún rango, devuelve una cadena vacía. El frontend interpreta eso como «Sin advertencias para el rango configurado».
+
+Pero no comprobó ningún rango.
+
+Eso es un falso resultado tranquilizador.
+
+### **¿De dónde debería salir el peso de referencia?**
+
+El SRS no proporciona una tabla oficial de pesos promedio por especie o raza. Lo que establece RF-23 es que los profesionales deben configurar criterios de plausibilidad.
+
+Por tanto, el sistema actual no puede conocer automáticamente cuánto debería pesar una mascota: necesita datos de referencia previamente configurados.
+
+Mi propuesta sería:
+
+1. Utilizar un catálogo fijo de especies, con códigos internos como CANINE y FELINE, y etiquetas visibles como Perro y Gato.
+2. Utilizar, cuando corresponda, criterios más específicos según raza, tamaño y etapa de vida.
+3. Comparar el peso nuevo también con las mediciones anteriores del mismo paciente.
+4. Mostrar advertencias que el veterinario pueda revisar, nunca diagnósticos automáticos.
+
+Una comparación genérica por especie puede servir para detectar valores evidentemente mal introducidos, pero no para determinar si un perro tiene un peso saludable. Un chihuahua y un gran danés no pueden evaluarse adecuadamente con el mismo intervalo clínico.
+
+La pantalla «Configurar rango orientativo de peso» tampoco debería aparecer constantemente en Consultas. Es una configuración administrativa de criterios clínicos, no una operación que se realice con cada paciente.
+
+Y si no hay un criterio configurado, el sistema debe decir «No existe un rango de referencia configurado», no «Sin advertencias».
+
+## **4. La ficha de la mascota debería ser el centro de Clínica**
+
+Coincido completamente con tus dos observaciones sobre la información de pacientes.
+
+Actualmente fragmentamos una sola operación clínica entre páginas que exigen recordar distintos identificadores:
+
+- Pacientes para buscar mascotas.
+- Consultas para registrar la atención.
+- Tratamientos para prescribir.
+- Vacunaciones para aplicar vacunas.
+- Seguimientos para programar revisiones.
+
+Eso sigue la estructura de nuestros controladores Java, pero no representa una buena interfaz.
+
+El SRS plantea la búsqueda del paciente y la consulta de su historial como un mismo caso de uso, CU-03. Y también establece que los datos clínicos deben vincularse correctamente a esa mascota.
+
+La organización más coherente sería:
+
+### **Ficha clínica de Luna**
+
+| Sección        | Contenido                                           |
+| -------------- | --------------------------------------------------- |
+| Identificación | Luna, especie, raza, edad, propietario              |
+| Estado actual  | En espera, en atención o lista para retiro          |
+| Datos clínicos | Último peso y mediciones anteriores                 |
+| Historial      | Consultas, diagnósticos y tratamientos              |
+| Vacunación     | Vacunas aplicadas y próximas dosis                  |
+| Citas          | Próximas citas y citas anteriores                   |
+| Seguimientos   | Controles pendientes y completados                  |
+| Acciones       | Registrar llegada, iniciar consulta, programar cita |
+
+Desde esa ficha, el usuario debería poder abrir un formulario de consulta y trabajar directamente sobre Luna.
+
+No debería seleccionar nuevamente a la mascota, introducir otro ID y regresar a otra página para registrar un diagnóstico.
+
+Podemos conservar los mismos PatientController, ConsultationController y TreatmentController. La interfaz puede agrupar las operaciones aunque el backend mantenga sus responsabilidades separadas.
+
+Esa es precisamente una ventaja de haber diseñado correctamente la arquitectura: las pantallas no tienen por qué replicar la estructura interna de clases.
+
+## **5. Los permisos: un Administrador no puede iniciar una consulta**
+
+En tu captura se observa la atención 1, de tipo URGENCY, y el mensaje:
+
+«No tiene permisos para esta operación clínica».
+
+Eso corresponde al comportamiento actual del código.
+
+ClinicalAccess exige VETERINARIO o ESPECIALISTA para iniciar y desarrollar determinadas operaciones clínicas. Y SqlActorAdapter recupera un único rol desde la tabla User.
+
+Por tanto, si has iniciado sesión como ADMINISTRADOR, el backend no te permitirá ejecutar esas operaciones.
+
+No es necesariamente un error de seguridad. El SRS distingue expresamente entre el Administrador, responsable de la gestión general, y el Veterinario, responsable de los diagnósticos, tratamientos y urgencias.
+
+El problema es que tampoco hemos facilitado la gestión de ese modelo de permisos.
+
+Haría dos cambios de experiencia de usuario:
+
+Primero, el frontend debe consultar el rol autenticado y ocultar o deshabilitar las operaciones clínicas que ese perfil no puede ejecutar, mostrando el motivo. Actualmente permite pulsar el botón y solo después comunica el rechazo.
+
+Segundo, deben existir cuentas veterinarias y especialistas correctamente configuradas.
+
+Si una persona es simultáneamente administradora y veterinaria, el modelo actual de un solo rol resulta limitado. Ahí podríamos evaluar permisos múltiples o perfiles combinados, pero no convertiría automáticamente a cualquier administrador en veterinario.
+
+Un permiso para administrar el sistema no debe equivaler a estar autorizado para emitir diagnósticos.
+
+## **6. La agenda: sí, quedó muy por debajo de lo que solicitamos**
+
+Esta es la crítica con la que más coincido a nivel de interfaz.
+
+Lo que construí no es realmente una agenda gráfica. Es un formulario para introducir fechas y consultar reservas.
+
+Y el SRS, específicamente RF-24, exige consultar horarios disponibles y reservados. El formulario actual solo muestra las citas ocupadas.
+
+Por tanto, la implementación de disponibilidad está incompleta desde el punto de vista funcional.
+
+### **Cómo funciona actualmente**
+
+AppointmentService recibe un identificador profesional y un intervalo de fechas. Después, AppointmentRepositoryPort consulta citas confirmadas que se cruzan con ese intervalo.
+
+Para registrar una cita, recibe mascota, profesional, fecha y duración; verifica que el profesional exista y que no haya solapamientos.
+
+Eso permite gestionar reservas desde el backend, pero no proporciona una experiencia visual adecuada.
+
+### **Cómo debería funcionar**
+
+Propuesta conceptual de agenda mensual
+
+## **Noviembre 2026**
+
+Profesional: Veterinario seleccionado
+
+L
+
+M
+
+X
+
+J
+
+V
+
+S
+
+D
+
+
+
+
+
+
+
+
+
+
+
+
+
+1
+
+2
+
+3
+
+4
+
+5
+
+6
+
+7
+
+8
+
+9
+
+10
+
+11
+
+12
+
+13
+
+14
+
+15
+
+16
+
+**17**
+
+18
+
+19
+
+20
+
+21
+
+22
+
+23
+
+24
+
+25
+
+26
+
+27
+
+28
+
+29
+
+Ejemplo ilustrativo, no conectado a las citas reales. Los indicadores representarían días con reservas y otros estados de disponibilidad.
+
+Esta agenda mensual permitiría:
+
+- Ver rápidamente qué días contienen citas.
+- Cambiar de mes y seleccionar un día.
+- Mostrar debajo los horarios disponibles y ocupados.
+- Seleccionar una hora directamente.
+- Elegir una mascota mediante su nombre y propietario.
+- Elegir al veterinario mediante una lista de profesionales.
+- Registrar, reprogramar o cancelar una cita desde el propio calendario.
+
+Así, recepción no tendría que escribir identificadores ni memorizar horarios.
+
+La información de reservas ya está parcialmente disponible mediante AppointmentRepositoryPort. Pero para mostrar disponibilidad real también necesitamos definir los horarios laborales de cada profesional, descansos y períodos no disponibles.
+
+Una ausencia de citas no implica necesariamente que un veterinario esté disponible a las tres de la madrugada.
+
+El calendario será principalmente una mejora de frontend, aunque necesitará algunos contratos adicionales para calcular las horas libres correctamente.
+
+## **7. Los seguimientos: no deberían sentirse como un sistema independiente**
+
+Aquí el SRS es especialmente interesante porque contempla dos situaciones diferentes.
+
+Primera: CU-11, programar una cita de seguimiento. Es una visita futura relacionada con un paciente y, cuando corresponda, con una consulta anterior.
+
+Segunda: el seguimiento postconsulta que aparece en el levantamiento de información. La veterinaria puede necesitar llamar al propietario varios días después para comprobar cómo evoluciona un paciente grave o recién operado.
+
+No son necesariamente lo mismo.
+
+Por ejemplo:
+
+Una veterinaria atiende a Luna el lunes, registra un diagnóstico y determina que debe volver el viernes. Eso origina una cita de seguimiento visible en la agenda.
+
+Pero también puede decidir llamar al propietario el miércoles para preguntar si el animal sigue presentando determinados síntomas. Esa actividad no necesita reservar un horario de consulta veterinaria: es una tarea de seguimiento clínico.
+
+Por eso sí tiene sentido conservar FollowUp como entidad diferenciada de Appointment.
+
+Lo que no tiene tanto sentido es obligar al usuario a ir a una pantalla completamente distinta y escribir el ID de la mascota, el ID de la consulta y, opcionalmente, el ID de la cita.
+
+La interfaz debería integrar el proceso:
+
+- Dentro de una consulta: «Programar seguimiento».
+- Dentro de una vacunación: «Programar próxima dosis».
+- Dentro de la ficha de la mascota: «Ver seguimientos».
+- Dentro de la agenda: «Crear cita de seguimiento».
+
+Y mantener un listado general de pendientes para el personal, porque el SRS también exige revisar los seguimientos que todavía no se han atendido.
+
+Que exista CU-11 como caso de uso independiente no obliga a crear una página independiente. Los casos de uso describen funcionalidades y objetivos, no la cantidad de pantallas del sistema.
+
+## **8. Cómo reorganizaría finalmente Clínica**
+
+| Sección principal     | Contenido que debería integrar                                                           |
+| --------------------- | ---------------------------------------------------------------------------------------- |
+| Pacientes             | Buscar por mascota/propietario, registrar mascota, ficha, historial, peso y vacunaciones |
+| Recepción             | Seleccionar mascota, registrar llegada, urgencia y lista de espera                       |
+| Atención clínica      | Consulta, diagnóstico, tratamientos, procedimientos, vacunación y cierre                 |
+| Agenda                | Calendario mensual/semanal, profesionales, citas y citas de seguimiento                  |
+| Pendientes            | Seguimientos, próximas dosis y revisiones no completadas                                 |
+| Configuración clínica | Criterios de peso, especies y parámetros autorizados                                     |
+
+De esta manera, en lugar de ocho páginas que reproducen las operaciones de los controladores, tendríamos seis áreas operativas que representan el trabajo de recepción y del personal médico.
+
+Los módulos Java pueden seguir exactamente donde están.
+
+## **9. Mi conclusión sobre las capturas**
+
+El frontend actual tiene una apariencia uniforme con Commercial, pero cometimos varios errores de diseño funcional:
+
+El más repetido es exigir identificadores internos donde deberíamos utilizar selectores con nombres. El más engañoso es la verificación de peso, porque puede devolver un resultado aparentemente correcto sin encontrar ninguna política. Y el más evidente visualmente es la agenda, que todavía no cumple la experiencia gráfica que buscábamos.
+
+El seguimiento no necesita eliminarse del dominio; necesita integrarse en los procesos clínicos y conservar su listado de pendientes.
+
+Y hay un detalle del SRS que considero decisivo: el proceso empieza buscando al propietario y la mascota, registra el peso al recibir al paciente, desarrolla la atención médica y termina con seguimiento y cobro cuando corresponda.
+
+Esa debería ser la secuencia que vea el usuario en las pantallas, no una colección de formularios organizada alrededor de identificadores SQL.
+
+Por tanto, mi recomendación es rediseñar la interfaz de Clínica alrededor de la ficha del paciente y la agenda gráfica, realizando únicamente las ampliaciones de backend necesarias para alimentar los selectores, manejar pesos y calcular disponibilidad. No necesitamos rehacer la arquitectura hexagonal para lograrlo.

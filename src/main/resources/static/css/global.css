@@ -1,0 +1,177 @@
+/* Fuente y paleta global */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+:root {
+    --primary: #226b4e;
+    --primary-dark: #174d38;
+    --background: #f3f5f7;
+    --surface: #ffffff;
+    --text: #263238;
+    --muted: #687782;
+    --border: #dfe5e9;
+    --danger: #b83232;
+    --login-background: #f2f4f7;
+    --login-accent: #3488f5;
+    --login-accent-hover: #2475dc;
+    --login-input-border: #cbd4da;
+    --login-error: #c0392b;
+}
+
+/* Reset y estilos base */
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: 'Poppins', sans-serif;
+    color: var(--text);
+    background: var(--background);
+}
+
+/* Tarjetas */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 23px;
+    margin-bottom: 22px;
+}
+
+.card h3 {
+    margin-top: 0;
+    font-size: 18px;
+}
+
+/* Cuadriculas y campos de formulario */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.field.full {
+    grid-column: 1 / -1;
+}
+
+label {
+    font-size: 13px;
+    color: #44535c;
+}
+
+input,
+select,
+textarea {
+    font: inherit;
+    padding: 11px 12px;
+    border: 1px solid #cbd4da;
+    border-radius: 5px;
+    background: white;
+    width: 100%;
+}
+
+textarea {
+    min-height: 90px;
+    resize: vertical;
+}
+
+/* Botones */
+button {
+    background: var(--primary);
+    border: 0;
+    border-radius: 5px;
+    color: white;
+    padding: 11px 17px;
+    font: inherit;
+    cursor: pointer;
+}
+
+button:hover {
+    opacity: 0.9;
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+button.secondary {
+    background: #637783;
+}
+
+button.danger {
+    background: var(--danger);
+}
+
+/* Acciones y barras de herramientas */
+.actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 19px;
+    flex-wrap: wrap;
+}
+
+.toolbar {
+    display: flex;
+    gap: 12px;
+    align-items: end;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+
+.toolbar .field {
+    min-width: 175px;
+}
+
+/* Tablas */
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+th,
+td {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: middle;
+}
+
+th {
+    background: #edf3f0;
+    color: #345446;
+}
+
+/* Mensajes y utilidades */
+.message {
+    margin-top: 15px;
+    min-height: 18px;
+    font-size: 14px;
+    color: var(--primary-dark);
+}
+
+.message.error {
+    color: var(--danger);
+}
+
+.muted {
+    color: var(--muted);
+}
+
+.summary {
+    font-size: 21px;
+    font-weight: 600;
+    margin: 16px 0;
+}

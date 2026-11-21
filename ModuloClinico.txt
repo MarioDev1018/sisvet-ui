@@ -1,0 +1,4924 @@
+# **SISVET-CLINIC — Implementación del módulo Clinical**
+
+## **1. Contrato arquitectónico y funcional**
+
+La implementación seguirá la estructura de paquetes acordada:
+
+`com.donkan.sisvetclinic.modules.clinical`
+
+Se conservarán las tres divisiones principales:
+
+- domain: entidades clínicas, estados y reglas propias del dominio.
+- service: puertos de entrada y salida, servicios, DTO y workflows.
+- infrastructure: controladores REST, persistencia SQL Server, tareas programadas y comunicación con Commercial.
+
+El módulo formará parte del mismo proyecto Spring Boot que Commercial, Finance y Notification. No se creará una segunda aplicación.
+
+### **Reglas obligatorias identificadas**
+
+Del SRS consolidado se desprenden estas restricciones que deben trasladarse al código:
+
+| Regla | Implementación requerida                                                                      |
+| ----- | --------------------------------------------------------------------------------------------- |
+| RN-02 | Cada mascota debe pertenecer a un propietario existente.                                      |
+| RN-03 | Impedir citas superpuestas de un mismo profesional.                                           |
+| RN-04 | Respetar la secuencia de estados de atención.                                                 |
+| RN-05 | No iniciar una atención sin llegada registrada.                                               |
+| RN-06 | No cerrar una atención clínica sin diagnóstico e indicaciones.                                |
+| RN-07 | No finalizar una atención con peluquería pendiente.                                           |
+| RN-08 | Recordatorios automáticos únicamente para citas confirmadas que cumplan el plazo establecido. |
+| RN-09 | Solo el veterinario puede alterar la prioridad clínica de una urgencia.                       |
+| RN-10 | Prescribir tratamientos no debe generar ventas ni modificar existencias.                      |
+
+También incorporaré las dos piezas cuya ausencia detectamos en el diagrama: persistencia de FollowUp y una representación comprobable del cierre clínico.
+
+El SAD V2.0, fechado el 14 de noviembre de 2026, advierte que el esquema clínico completo todavía no existe en la base SQL Server verificada. Por tanto, además de Java, es necesario definir las tablas clínicas y sus restricciones. No sería correcto presentar una implementación como funcional sobre la base actual sin resolver ese punto.
+
+### **Criterios técnicos**
+
+Utilizaré Java 21, Spring Boot 3, Spring JDBC y SQL Server para esta implementación. Java 21 y Spring Boot 3 son decisiones de implementación para el código mostrado, no versiones que haya podido verificar en el pom.xml existente, porque ese archivo no está entre los adjuntos.
+
+Los contratos de dominio no dependerán de Spring, SQL ni clases de controladores. Los servicios de aplicación coordinarán las reglas y las transacciones. Los adaptadores realizarán las consultas a SQL Server.
+
+La integración con Notification utilizará su contrato NotificationUseCase, sin copiar el servicio de notificaciones dentro de Clinical. Para que el sistema completo arranque con esa integración, dicho contrato deberá tener una implementación Spring disponible en el módulo Notification.
+
+Hay una limitación adicional: se ha adjuntado código Java de la versión Swing y los diagramas comerciales, pero no el código fuente Spring Boot actual de Commercial ni su configuración de seguridad. Las integraciones con esos componentes deben respetar los contratos aquí definidos, pero no puedo certificar su compatibilidad binaria con clases que no he recibido.
+
+## **2. Entidades de dominio**
+
+Todos los archivos de esta sección pertenecen a:
+
+`src/main/java/com/donkan/sisvetclinic/modules/clinical/domain/`
+
+### **2.1. Pet.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDate;
+
+public record Pet(
+    long id,
+    long ownerId,
+    String name,
+    String species,
+    String breed,
+    String sex,
+    LocalDate birthDate,
+    Integer estimatedAgeMonths
+) {}
+```
+
+### **2.2. MedicalConsultation.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+public record MedicalConsultation(
+    long id,
+    long attentionId,
+    long petId,
+    long veterinarianId,
+    String reason,
+    BigDecimal weight,
+    String symptoms,
+    String observations,
+    String status,
+    LocalDateTime createdAt
+) {}
+```
+
+### **2.3. Diagnosis.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record Diagnosis(
+    long id,
+    long consultationId,
+    String description,
+    String indications,
+    long authorId,
+    LocalDateTime createdAt
+) {}
+```
+
+### **2.4. Treatment.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record Treatment(
+    long id,
+    long consultationId,
+    String description,
+    String instructions,
+    Long productId,
+    LocalDateTime prescribedAt,
+    long authorId
+) {}
+```
+
+### **2.5. ClinicalProcedure.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record ClinicalProcedure(
+    long id,
+    long consultationId,
+    String name,
+    String observations,
+    LocalDateTime performedAt,
+    long authorId
+) {}
+```
+
+### **2.6. Vaccination.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
+public record Vaccination(
+    long id,
+    long petId,
+    Long consultationId,
+    String vaccine,
+    String dose,
+    LocalDateTime appliedAt,
+    LocalDate nextDoseDate,
+    long veterinarianId
+) {}
+```
+
+### **2.7. Referral.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record Referral(
+    long id,
+    long consultationId,
+    String reason,
+    String destination,
+    LocalDateTime createdAt,
+    long authorId
+) {}
+```
+
+### **2.8. Appointment.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record Appointment(
+    long id,
+    long petId,
+    long professionalId,
+    String reason,
+    LocalDateTime startsAt,
+    LocalDateTime endsAt,
+    String status,
+    String specialty,
+    Long consultationId,
+    LocalDateTime createdAt,
+    boolean reminderSent
+) {}
+```
+
+### **2.9. FollowUp.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.time.LocalDateTime;
+
+public record FollowUp(
+    long id,
+    long petId,
+    Long consultationId,
+    String reason,
+    LocalDateTime dueAt,
+    String status,
+    LocalDateTime reviewedAt,
+    Long appointmentId
+) {}
+```
+
+### **2.10. MedicalHistory.java**
+
+En este diseño MedicalHistory se construye mediante la consulta de sus registros relacionados. No necesita una segunda tabla que duplique el historial.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import java.util.List;
+
+public record MedicalHistory(
+    long id,
+    long petId,
+    List<MedicalConsultation> consultations,
+    List<Diagnosis> diagnoses,
+    List<Treatment> treatments,
+    List<ClinicalProcedure> procedures,
+    List<Vaccination> vaccinations,
+    List<Referral> referrals,
+    List<FollowUp> followUps
+) {}
+```
+
+### **2.11. MedicationDetail.java**
+
+Es un modelo de lectura para identificar medicamentos registrados en el catálogo comercial.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+public record MedicationDetail(
+    long productId,
+    String tradeName,
+    String activeIngredient,
+    String concentration,
+    String presentation
+) {}
+```
+
+### **2.12. Actor.java**
+
+Representa únicamente la identidad y el rol del usuario autenticado que ejecuta una operación clínica.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+public record Actor(long id, String role) {}
+```
+
+### **2.13. ClinicalAttention.java**
+
+Esta clase conserva comportamiento mutable porque implementa el patrón State y debe cambiar su estado durante una atención.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.state.*;
+import java.time.LocalDateTime;
+
+public class ClinicalAttention {
+
+    private long id;
+    private final long petId;
+    private String type;
+    private Integer priority;
+    private String urgencyDescription;
+    private Long priorityAssignedBy;
+    private AttentionState state;
+    private LocalDateTime arrivedAt;
+    private boolean requiresGrooming;
+    private boolean clinicalClosed;
+    private Long consultationId;
+
+    public ClinicalAttention(
+        long id,
+        long petId,
+        String type,
+        Integer priority,
+        String urgencyDescription,
+        Long priorityAssignedBy,
+        String state,
+        LocalDateTime arrivedAt,
+        boolean requiresGrooming,
+        boolean clinicalClosed,
+        Long consultationId
+    ) {
+        this.id = id;
+        this.petId = petId;
+        this.type = type;
+        this.priority = priority;
+        this.urgencyDescription = urgencyDescription;
+        this.priorityAssignedBy = priorityAssignedBy;
+        this.state = AttentionStates.fromName(state);
+        this.arrivedAt = arrivedAt;
+        this.requiresGrooming = requiresGrooming;
+        this.clinicalClosed = clinicalClosed;
+        this.consultationId = consultationId;
+    }
+
+    public long getId() { return id; }
+    public void setId(long id) { this.id = id; }
+
+    public long getPetId() { return petId; }
+    public String getType() { return type; }
+    public Integer getPriority() { return priority; }
+    public String getUrgencyDescription() { return urgencyDescription; }
+    public Long getPriorityAssignedBy() { return priorityAssignedBy; }
+    public String getStatus() { return state.getName(); }
+    public LocalDateTime getArrivedAt() { return arrivedAt; }
+    public boolean isRequiresGrooming() { return requiresGrooming; }
+    public boolean isClinicalClosed() { return clinicalClosed; }
+    public Long getConsultationId() { return consultationId; }
+
+    public void markArrived(LocalDateTime at, boolean grooming) {
+        if (arrivedAt != null) {
+            throw new IllegalStateException(
+                "La llegada ya fue registrada"
+            );
+        }
+
+        arrivedAt = at;
+        requiresGrooming = grooming;
+    }
+
+    public void registerUrgency(String description) {
+        if (description == null || description.isBlank()) {
+            throw new IllegalArgumentException(
+                "Describa la urgencia"
+            );
+        }
+
+        if (priority != null) {
+            throw new IllegalStateException(
+                "Solo el veterinario puede modificar la valoración clínica"
+            );
+        }
+
+        urgencyDescription = description;
+        type = "URGENCY";
+    }
+
+    public void assignPriority(int value, long veterinarianId) {
+        if (urgencyDescription == null) {
+            throw new IllegalStateException(
+                "No existe una urgencia registrada"
+            );
+        }
+
+        if (value < 1 || value > 5) {
+            throw new IllegalArgumentException(
+                "Prioridad entre 1 y 5"
+            );
+        }
+
+        priority = value;
+        priorityAssignedBy = veterinarianId;
+    }
+
+    public void setConsultationId(long id) {
+        consultationId = id;
+    }
+
+    public void setClinicalClosed() {
+        clinicalClosed = true;
+    }
+
+    public void changeState(AttentionState newState) {
+        state = newState;
+    }
+
+    public void advance() {
+        state.advance(this);
+    }
+}
+```
+
+## **3. Patrón State**
+
+Ruta:
+
+`clinical/domain/state/`
+
+Se implementarán los seis estados concretos del diagrama V0.6 y la interfaz común. AttentionStates permite reconstruir el objeto de estado desde el valor almacenado en SQL Server.
+
+### **3.1. AttentionState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public interface AttentionState {
+    void advance(ClinicalAttention attention);
+    String getName();
+}
+```
+
+### **3.2. AttentionStates.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+public final class AttentionStates {
+
+    private AttentionStates() {}
+
+    public static AttentionState fromName(String name) {
+        return switch (name) {
+            case "EN_ESPERA" -> new WaitingState();
+            case "ATENDIENDOSE" -> new InProgressState();
+            case "EN_BANO" -> new BathingState();
+            case "EN_PELUQUERIA" -> new GroomingState();
+            case "LISTO_RECOJO" -> new ReadyForPickupState();
+            case "ATENDIDO" -> new PickedUpState();
+
+            default -> throw new IllegalArgumentException(
+                "Estado de atención desconocido: " + name
+            );
+        };
+    }
+}
+```
+
+### **3.3. WaitingState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class WaitingState implements AttentionState {
+
+    public String getName() {
+        return "EN_ESPERA";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        if (attention.getArrivedAt() == null) {
+            throw new IllegalStateException(
+                "Primero debe registrarse la llegada"
+            );
+        }
+
+        attention.changeState(new InProgressState());
+    }
+}
+```
+
+### **3.4. InProgressState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class InProgressState implements AttentionState {
+
+    public String getName() {
+        return "ATENDIENDOSE";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        if (!attention.isClinicalClosed()) {
+            throw new IllegalStateException(
+                "Falta cerrar la consulta con diagnóstico e indicaciones"
+            );
+        }
+
+        attention.changeState(
+            attention.isRequiresGrooming()
+                ? new BathingState()
+                : new ReadyForPickupState()
+        );
+    }
+}
+```
+
+### **3.5. BathingState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class BathingState implements AttentionState {
+
+    public String getName() {
+        return "EN_BANO";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        attention.changeState(new GroomingState());
+    }
+}
+```
+
+### **3.6. GroomingState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class GroomingState implements AttentionState {
+
+    public String getName() {
+        return "EN_PELUQUERIA";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        attention.changeState(new ReadyForPickupState());
+    }
+}
+```
+
+### **3.7. ReadyForPickupState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class ReadyForPickupState implements AttentionState {
+
+    public String getName() {
+        return "LISTO_RECOJO";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        if (!attention.isClinicalClosed()) {
+            throw new IllegalStateException(
+                "Falta cierre clínico"
+            );
+        }
+
+        attention.changeState(new PickedUpState());
+    }
+}
+```
+
+### **3.8. PickedUpState.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.domain.state;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public final class PickedUpState implements AttentionState {
+
+    public String getName() {
+        return "ATENDIDO";
+    }
+
+    public void advance(ClinicalAttention attention) {
+        throw new IllegalStateException(
+            "La atención ya ha concluido"
+        );
+    }
+}
+```
+
+El acceso al estado final ATENDIDO será coordinado por AttentionService, que también verificará las condiciones de retiro y la existencia de cobros pendientes.
+
+## **4. DTO de entrada**
+
+Ruta:
+
+`clinical/service/dto/request/`
+
+Estos DTO corresponden a los datos que reciben los casos de uso. La identidad del usuario responsable se obtendrá desde la sesión autenticada, no desde un identificador enviado libremente por el navegador.
+
+### **PetRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.time.LocalDate;
+
+public record PetRequest(
+    long ownerId,
+    String name,
+    String species,
+    String breed,
+    String sex,
+    LocalDate birthDate,
+    Integer estimatedAgeMonths
+) {}
+```
+
+### **ArrivalRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record ArrivalRequest(
+    long petId,
+    String type,
+    boolean requiresGrooming
+) {}
+```
+
+### **UrgencyRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record UrgencyRequest(
+    long petId,
+    String description
+) {}
+```
+
+### **PriorityRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record PriorityRequest(int priority) {}
+```
+
+### **ConsultationRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.math.BigDecimal;
+
+public record ConsultationRequest(
+    long attentionId,
+    String reason,
+    BigDecimal weight,
+    String symptoms,
+    String observations
+) {}
+```
+
+### **DiagnosisRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record DiagnosisRequest(
+    long consultationId,
+    String description,
+    String indications
+) {}
+```
+
+### **TreatmentRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record TreatmentRequest(
+    long consultationId,
+    String description,
+    String instructions,
+    Long productId
+) {}
+```
+
+### **ProcedureRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record ProcedureRequest(
+    long consultationId,
+    String name,
+    String observations
+) {}
+```
+
+### **VaccinationRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.time.LocalDate;
+
+public record VaccinationRequest(
+    long petId,
+    Long consultationId,
+    String vaccine,
+    String dose,
+    LocalDate nextDoseDate
+) {}
+```
+
+### **ReferralRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+public record ReferralRequest(
+    long consultationId,
+    String reason,
+    String destination
+) {}
+```
+
+### **AppointmentRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.time.LocalDateTime;
+
+public record AppointmentRequest(
+    long petId,
+    long professionalId,
+    String reason,
+    LocalDateTime date,
+    int durationMinutes,
+    String specialty,
+    Long consultationId
+) {}
+```
+
+### **AvailabilityFilter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.time.LocalDateTime;
+
+public record AvailabilityFilter(
+    long professionalId,
+    LocalDateTime start,
+    LocalDateTime end
+) {}
+```
+
+### **FollowUpRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.time.LocalDateTime;
+
+public record FollowUpRequest(
+    long petId,
+    Long consultationId,
+    String reason,
+    LocalDateTime dueAt,
+    Long appointmentId
+) {}
+```
+
+### **WeightRangeRequest.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.dto.request;
+
+import java.math.BigDecimal;
+
+public record WeightRangeRequest(
+    String species,
+    BigDecimal minimum,
+    BigDecimal maximum
+) {}
+```
+
+## **5. Puertos de entrada**
+
+Ruta:
+
+`clinical/service/port/in/`
+
+Son los contratos que consumen los adaptadores de entrada. Ningún controlador debe llamar directamente a un repositorio SQL.
+
+### **PatientUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+
+public interface PatientUseCase {
+
+    Pet registerPet(PetRequest request);
+
+    Pet findPet(long id);
+
+    List<Pet> searchPets(String criteria);
+
+    MedicalHistory getMedicalHistory(long petId);
+
+    List<MedicalConsultation> getConsultations(long petId);
+}
+```
+
+### **AttentionUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+
+public interface AttentionUseCase {
+
+    ClinicalAttention registerArrival(ArrivalRequest request);
+
+    void registerUrgency(UrgencyRequest request);
+
+    void assignPriority(long id, int priority);
+
+    List<ClinicalAttention> getWaitingPatients();
+
+    void startAttention(long id);
+
+    void advanceAttention(long id);
+
+    void registerPickup(long id);
+}
+```
+
+### **ConsultationUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+
+public interface ConsultationUseCase {
+
+    MedicalConsultation registerConsultation(ConsultationRequest request);
+
+    Diagnosis registerDiagnosis(DiagnosisRequest request);
+
+    void completeConsultation(long id);
+
+    String checkWeight(long petId, java.math.BigDecimal weight);
+}
+```
+
+### **TreatmentUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+
+public interface TreatmentUseCase {
+
+    Treatment registerTreatment(TreatmentRequest request);
+
+    ClinicalProcedure registerProcedure(ProcedureRequest request);
+
+    Vaccination registerVaccination(VaccinationRequest request);
+
+    Referral registerReferral(ReferralRequest request);
+
+    java.util.List<MedicationDetail> getMedicationOptions(String search);
+}
+```
+
+### **AppointmentUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.Appointment;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+
+public interface AppointmentUseCase {
+
+    List<Appointment> getAvailability(AvailabilityFilter filter);
+
+    Appointment scheduleAppointment(AppointmentRequest request);
+
+    Appointment scheduleFollowUp(AppointmentRequest request);
+
+    Appointment scheduleSpecialist(AppointmentRequest request);
+
+    void rescheduleAppointment(long id, java.time.LocalDateTime date);
+
+    void cancelAppointment(long id);
+}
+```
+
+### **FollowUpUseCase.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.FollowUp;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.FollowUpRequest;
+
+public interface FollowUpUseCase {
+
+    FollowUp scheduleFollowUp(FollowUpRequest request);
+
+    List<FollowUp> getPendingFollowUps();
+
+    void reviewPendingFollowUps();
+
+    void completeFollowUp(long id);
+
+    void rescheduleAppointmentFollowUp(
+        long appointmentId,
+        java.time.LocalDateTime date
+    );
+
+    void cancelAppointmentFollowUp(long appointmentId);
+}
+```
+
+### **WeightPolicyUseCase.java**
+
+Este contrato adicional permite configurar advertencias de peso sin introducir lógica de negocio en el controlador REST.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.WeightRangeRequest;
+
+public interface WeightPolicyUseCase {
+    void configure(WeightRangeRequest request);
+}
+```
+
+## **6. Puertos de salida**
+
+Ruta:
+
+`clinical/service/port/out/`
+
+### **PatientRepositoryPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+
+public interface PatientRepositoryPort {
+
+    Pet save(Pet pet);
+
+    Pet findById(long id);
+
+    List<Pet> search(String criteria);
+}
+```
+
+### **OwnerLookupPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+public interface OwnerLookupPort {
+    boolean existsOwner(long id);
+}
+```
+
+### **AttentionRepositoryPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public interface AttentionRepositoryPort {
+
+    ClinicalAttention save(ClinicalAttention attention);
+
+    ClinicalAttention findById(long id);
+
+    ClinicalAttention findOpenByPet(long petId);
+
+    List<ClinicalAttention> findWaiting();
+
+    void auditPriority(
+        long attentionId,
+        long veterinarianId,
+        int priority
+    );
+}
+```
+
+### **ClinicalRecordPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+
+public interface ClinicalRecordPort {
+
+    MedicalConsultation saveConsultation(MedicalConsultation consultation);
+
+    MedicalConsultation findConsultation(long id);
+
+    List<MedicalConsultation> listByPet(long petId);
+
+    List<Diagnosis> listDiagnosesByPet(long petId);
+
+    Diagnosis saveDiagnosis(Diagnosis diagnosis);
+
+    boolean hasCompleteDiagnosis(long consultationId);
+
+    void completeConsultation(long id, long actorId);
+}
+```
+
+### **TreatmentRepositoryPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.time.LocalDate;
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+
+public interface TreatmentRepositoryPort {
+
+    Treatment saveTreatment(Treatment treatment);
+
+    ClinicalProcedure saveProcedure(ClinicalProcedure procedure);
+
+    Vaccination saveVaccination(Vaccination vaccination);
+
+    Referral saveReferral(Referral referral);
+
+    List<Vaccination> listVaccinations(long petId);
+
+    List<Treatment> listTreatmentsByPet(long petId);
+
+    List<ClinicalProcedure> listProceduresByPet(long petId);
+
+    List<Referral> listReferralsByPet(long petId);
+
+    List<LocalDate> findPendingDoses(LocalDate date);
+}
+```
+
+### **AppointmentRepositoryPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.Appointment;
+
+public interface AppointmentRepositoryPort {
+
+    Appointment save(Appointment appointment);
+
+    Appointment findById(long id);
+
+    List<Appointment> findAvailability(
+        long professionalId,
+        LocalDateTime start,
+        LocalDateTime end
+    );
+
+    boolean hasConflict(
+        long professionalId,
+        LocalDateTime start,
+        LocalDateTime end,
+        long excludedId
+    );
+
+    void reschedule(
+        long id,
+        LocalDateTime start,
+        LocalDateTime end
+    );
+
+    void cancel(long id);
+
+    List<Appointment> findReminderCandidates(
+        LocalDateTime now,
+        LocalDateTime until
+    );
+
+    void markReminderSent(long id);
+}
+```
+
+### **FollowUpRepositoryPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.FollowUp;
+
+public interface FollowUpRepositoryPort {
+
+    FollowUp save(FollowUp followUp);
+
+    FollowUp findById(long id);
+
+    List<FollowUp> findPending(LocalDateTime until);
+
+    List<FollowUp> findOutstanding();
+
+    List<FollowUp> listByPet(long petId);
+
+    void markReviewed(long id);
+
+    void complete(long id);
+
+    void rescheduleByAppointment(
+        long appointmentId,
+        LocalDateTime date
+    );
+
+    void cancelByAppointment(long appointmentId);
+}
+```
+
+### **ActorPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.Actor;
+
+public interface ActorPort {
+    Actor current();
+}
+```
+
+### **ClinicalChargePort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+public interface ClinicalChargePort {
+    boolean isSettled(long consultationId);
+}
+```
+
+### **ProfessionalLookupPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+public interface ProfessionalLookupPort {
+
+    boolean canAttend(long professionalId);
+
+    boolean hasSpecialty(
+        long professionalId,
+        String specialty
+    );
+}
+```
+
+### **MedicationLookupPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.util.List;
+import com.donkan.sisvetclinic.modules.clinical.domain.MedicationDetail;
+
+public interface MedicationLookupPort {
+    List<MedicationDetail> search(String name);
+}
+```
+
+### **NotificationDispatchPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+public interface NotificationDispatchPort {
+
+    boolean send(
+        long recipientId,
+        String key,
+        String subject,
+        String message
+    );
+}
+```
+
+### **WeightPolicyPort.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import java.math.BigDecimal;
+
+public interface WeightPolicyPort {
+
+    String warning(String species, BigDecimal weight);
+
+    void configure(
+        String species,
+        BigDecimal minimum,
+        BigDecimal maximum
+    );
+}
+```
+
+Estos contratos conservan la dependencia hacia el interior: los servicios utilizan interfaces y los adaptadores de infraestructura las implementan.
+
+## **7. Patrón Template Method**
+
+Ruta: `clinical/service/workflow/`
+
+El patrón Template Method concentra las validaciones comunes antes de ejecutar los tres tipos de atención del diagrama V0.6. La persistencia sigue siendo responsabilidad de los servicios y sus puertos, no de las clases workflow.
+
+### **AttentionWorkflow\.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.workflow;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+public abstract class AttentionWorkflow {
+
+    public final void execute(ClinicalAttention attention) {
+        validate(attention);
+        perform(attention);
+    }
+
+    protected void validate(ClinicalAttention attention) {
+        if (attention.getArrivedAt() == null || !"EN_ESPERA".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "La mascota debe registrar su llegada antes de iniciar atención"
+            );
+        }
+    }
+
+    protected abstract void perform(ClinicalAttention attention);
+
+    public abstract boolean supports(String type);
+}
+```
+
+### **MedicalAttentionWorkflow\.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.workflow;
+
+import org.springframework.stereotype.Component;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+@Component
+public class MedicalAttentionWorkflow extends AttentionWorkflow {
+
+    public boolean supports(String type) {
+        return "MEDICAL".equalsIgnoreCase(type);
+    }
+
+    protected void perform(ClinicalAttention attention) {
+        attention.advance();
+    }
+}
+```
+
+### **VaccinationWorkflow\.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.workflow;
+
+import org.springframework.stereotype.Component;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+@Component
+public class VaccinationWorkflow extends AttentionWorkflow {
+
+    public boolean supports(String type) {
+        return "VACCINATION".equalsIgnoreCase(type);
+    }
+
+    protected void perform(ClinicalAttention attention) {
+        attention.advance();
+    }
+}
+```
+
+### **GroomingWorkflow\.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.workflow;
+
+import org.springframework.stereotype.Component;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+
+@Component
+public class GroomingWorkflow extends AttentionWorkflow {
+
+    public boolean supports(String type) {
+        return "GROOMING".equalsIgnoreCase(type);
+    }
+
+    protected void perform(ClinicalAttention attention) {
+        attention.advance();
+    }
+}
+```
+
+## **8. Servicios de aplicación**
+
+Ruta: `clinical/service/implementation/`
+
+Estos servicios implementan los puertos de entrada. Los métodos que modifican varios registros relacionados utilizan transacciones de Spring para mantener la consistencia en SQL Server.
+
+### **8.1. ClinicalAccess.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.text.Normalizer;
+import java.util.Locale;
+import com.donkan.sisvetclinic.modules.clinical.domain.Actor;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.ActorPort;
+
+public final class ClinicalAccess {
+
+    private ClinicalAccess() {}
+
+    public static Actor require(ActorPort actors, String... allowed) {
+        Actor actor = actors.current();
+        String actual = normalize(actor.role());
+
+        for (String role : allowed) {
+            if (actual.equals(normalize(role))) {
+                return actor;
+            }
+        }
+
+        throw new SecurityException(
+            "No tiene permisos para esta operación clínica"
+        );
+    }
+
+    private static String normalize(String text) {
+        return Normalizer.normalize(text, Normalizer.Form.NFD)
+            .replaceAll("\\p{M}+", "")
+            .replace("ROLE_", "")
+            .toUpperCase(Locale.ROOT)
+            .trim();
+    }
+}
+```
+
+### **8.2. PatientService.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.util.List;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.PatientUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class PatientService implements PatientUseCase {
+
+    private final PatientRepositoryPort patients;
+    private final OwnerLookupPort owners;
+    private final ClinicalRecordPort records;
+    private final TreatmentRepositoryPort treatments;
+    private final FollowUpRepositoryPort followUps;
+    private final ActorPort actors;
+
+    public PatientService(
+        PatientRepositoryPort patients,
+        OwnerLookupPort owners,
+        ClinicalRecordPort records,
+        TreatmentRepositoryPort treatments,
+        FollowUpRepositoryPort followUps,
+        ActorPort actors
+    ) {
+        this.patients = patients;
+        this.owners = owners;
+        this.records = records;
+        this.treatments = treatments;
+        this.followUps = followUps;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public Pet registerPet(PetRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        if (r == null || r.ownerId() <= 0 || r.name() == null ||
+            r.name().isBlank() || r.species() == null || r.species().isBlank()) {
+            throw new IllegalArgumentException(
+                "Propietario, nombre y especie son obligatorios"
+            );
+        }
+
+        if (r.birthDate() == null &&
+            (r.estimatedAgeMonths() == null || r.estimatedAgeMonths() < 0)) {
+            throw new IllegalArgumentException(
+                "Indique fecha de nacimiento o edad aproximada"
+            );
+        }
+
+        if (!owners.existsOwner(r.ownerId())) {
+            throw new IllegalArgumentException(
+                "El propietario no existe o está inactivo"
+            );
+        }
+
+        return patients.save(
+            new Pet(
+                0, r.ownerId(), r.name().trim(), r.species().trim(),
+                r.breed(), r.sex(), r.birthDate(), r.estimatedAgeMonths()
+            )
+        );
+    }
+
+    public Pet findPet(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        Pet pet = patients.findById(id);
+
+        if (pet == null) {
+            throw new IllegalArgumentException("Mascota no encontrada");
+        }
+
+        return pet;
+    }
+
+    public List<Pet> searchPets(String criteria) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        return patients.search(criteria == null ? "" : criteria.trim());
+    }
+
+    public MedicalHistory getMedicalHistory(long petId) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (patients.findById(petId) == null) {
+            throw new IllegalArgumentException("Mascota no encontrada");
+        }
+
+        return new MedicalHistory(
+            petId, petId,
+            records.listByPet(petId),
+            records.listDiagnosesByPet(petId),
+            treatments.listTreatmentsByPet(petId),
+            treatments.listProceduresByPet(petId),
+            treatments.listVaccinations(petId),
+            treatments.listReferralsByPet(petId),
+            followUps.listByPet(petId)
+        );
+    }
+
+    public List<MedicalConsultation> getConsultations(long petId) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        return records.listByPet(petId);
+    }
+}
+```
+
+### **8.3. AttentionService.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.AttentionUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+import com.donkan.sisvetclinic.modules.clinical.service.workflow.AttentionWorkflow;
+
+@Service
+public class AttentionService implements AttentionUseCase {
+
+    private final AttentionRepositoryPort attentions;
+    private final PatientRepositoryPort patients;
+    private final ClinicalRecordPort records;
+    private final ClinicalChargePort charges;
+    private final ActorPort actors;
+    private final List<AttentionWorkflow> workflows;
+
+    public AttentionService(
+        AttentionRepositoryPort attentions,
+        PatientRepositoryPort patients,
+        ClinicalRecordPort records,
+        ClinicalChargePort charges,
+        ActorPort actors,
+        List<AttentionWorkflow> workflows
+    ) {
+        this.attentions = attentions;
+        this.patients = patients;
+        this.records = records;
+        this.charges = charges;
+        this.actors = actors;
+        this.workflows = workflows;
+    }
+
+    @Transactional
+    public ClinicalAttention registerArrival(ArrivalRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null) {
+            throw new IllegalArgumentException("Paciente no encontrado");
+        }
+
+        ClinicalAttention attention = attentions.findOpenByPet(r.petId());
+
+        if (attention == null) {
+            attention = new ClinicalAttention(
+                0, r.petId(),
+                r.type() == null ? "MEDICAL" : r.type().toUpperCase(),
+                null, null, null, "EN_ESPERA", null,
+                r.requiresGrooming(), false, null
+            );
+        }
+
+        attention.markArrived(LocalDateTime.now(), r.requiresGrooming());
+        return attentions.save(attention);
+    }
+
+    @Transactional
+    public void registerUrgency(UrgencyRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null) {
+            throw new IllegalArgumentException("Mascota inexistente");
+        }
+
+        ClinicalAttention attention = attentions.findOpenByPet(r.petId());
+
+        if (attention == null) {
+            attention = new ClinicalAttention(
+                0, r.petId(), "URGENCY", null, null, null,
+                "EN_ESPERA", null, false, false, null
+            );
+        }
+
+        if (!"EN_ESPERA".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "La urgencia debe registrarse durante la espera"
+            );
+        }
+
+        attention.registerUrgency(r.description());
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void assignPriority(long id, int priority) {
+        Actor actor = ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+        attention.assignPriority(priority, actor.id());
+
+        attentions.save(attention);
+        attentions.auditPriority(id, actor.id(), priority);
+    }
+
+    public List<ClinicalAttention> getWaitingPatients() {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        return attentions.findWaiting();
+    }
+
+    @Transactional
+    public void startAttention(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+        String type = "URGENCY".equals(attention.getType())
+            ? "MEDICAL" : attention.getType();
+
+        AttentionWorkflow workflow = workflows.stream()
+            .filter(w -> w.supports(type))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException(
+                "No existe workflow para " + type
+            ));
+
+        workflow.execute(attention);
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void advanceAttention(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+
+        if ("LISTO_RECOJO".equals(attention.getStatus()) ||
+            "ATENDIDO".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "Use el registro de retiro para finalizar la atención"
+            );
+        }
+
+        attention.advance();
+        attentions.save(attention);
+    }
+
+    @Transactional
+    public void registerPickup(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        ClinicalAttention attention = requireAttention(id);
+
+        if (!"LISTO_RECOJO".equals(attention.getStatus())) {
+            throw new IllegalStateException(
+                "La mascota todavía no está lista para recojo"
+            );
+        }
+
+        if (attention.getConsultationId() == null ||
+            !charges.isSettled(attention.getConsultationId())) {
+            throw new IllegalStateException(
+                "La atención no tiene cierre clínico o registra cobros pendientes"
+            );
+        }
+
+        attention.advance();
+        attentions.save(attention);
+    }
+
+    private ClinicalAttention requireAttention(long id) {
+        ClinicalAttention attention = attentions.findById(id);
+
+        if (attention == null) {
+            throw new IllegalArgumentException("Atención no encontrada");
+        }
+
+        return attention;
+    }
+}
+```
+
+### **8.4. ConsultationService.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.ConsultationUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class ConsultationService implements ConsultationUseCase {
+
+    private final ClinicalRecordPort records;
+    private final AttentionRepositoryPort attentions;
+    private final PatientRepositoryPort patients;
+    private final WeightPolicyPort weightPolicy;
+    private final ActorPort actors;
+
+    public ConsultationService(
+        ClinicalRecordPort records,
+        AttentionRepositoryPort attentions,
+        PatientRepositoryPort patients,
+        WeightPolicyPort weightPolicy,
+        ActorPort actors
+    ) {
+        this.records = records;
+        this.attentions = attentions;
+        this.patients = patients;
+        this.weightPolicy = weightPolicy;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public MedicalConsultation registerConsultation(ConsultationRequest r) {
+        Actor actor = ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (r == null || r.reason() == null || r.reason().isBlank() ||
+            r.weight() == null || r.weight().signum() <= 0) {
+            throw new IllegalArgumentException(
+                "Motivo y peso válido son obligatorios"
+            );
+        }
+
+        ClinicalAttention attention = requireAttention(r.attentionId());
+
+        if (!"ATENDIENDOSE".equals(attention.getStatus())) {
+            throw new IllegalStateException("La atención no está iniciada");
+        }
+
+        if (attention.getConsultationId() != null) {
+            throw new IllegalStateException(
+                "La atención ya tiene consulta"
+            );
+        }
+
+        MedicalConsultation saved = records.saveConsultation(
+            new MedicalConsultation(
+                0, attention.getId(), attention.getPetId(), actor.id(),
+                r.reason(), r.weight(), r.symptoms(),
+                r.observations(), "OPEN", LocalDateTime.now()
+            )
+        );
+
+        attention.setConsultationId(saved.id());
+        attentions.save(attention);
+        return saved;
+    }
+
+    @Transactional
+    public Diagnosis registerDiagnosis(DiagnosisRequest r) {
+        Actor actor = ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (r == null || r.description() == null || r.description().isBlank() ||
+            r.indications() == null || r.indications().isBlank()) {
+            throw new IllegalArgumentException(
+                "Diagnóstico e indicaciones son obligatorios"
+            );
+        }
+
+        MedicalConsultation consultation =
+            records.findConsultation(r.consultationId());
+
+        if (consultation == null || "COMPLETED".equals(consultation.status())) {
+            throw new IllegalStateException(
+                "Consulta inexistente o finalizada"
+            );
+        }
+
+        return records.saveDiagnosis(
+            new Diagnosis(
+                0, r.consultationId(), r.description(),
+                r.indications(), actor.id(), LocalDateTime.now()
+            )
+        );
+    }
+
+    @Transactional
+    public void completeConsultation(long id) {
+        Actor actor = ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        MedicalConsultation consultation = records.findConsultation(id);
+
+        if (consultation == null ||
+            "COMPLETED".equals(consultation.status())) {
+            throw new IllegalStateException(
+                "Consulta inválida para cierre"
+            );
+        }
+
+        if (!records.hasCompleteDiagnosis(id)) {
+            throw new IllegalStateException(
+                "Debe registrar diagnóstico e indicaciones"
+            );
+        }
+
+        records.completeConsultation(id, actor.id());
+
+        ClinicalAttention attention =
+            requireAttention(consultation.attentionId());
+
+        attention.setClinicalClosed();
+        attentions.save(attention);
+    }
+
+    public String checkWeight(long petId, BigDecimal weight) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        Pet pet = patients.findById(petId);
+
+        if (pet == null) {
+            throw new IllegalArgumentException("Mascota inexistente");
+        }
+
+        if (weight == null || weight.signum() <= 0) {
+            throw new IllegalArgumentException("Peso debe ser positivo");
+        }
+
+        return weightPolicy.warning(pet.species(), weight);
+    }
+
+    private ClinicalAttention requireAttention(long id) {
+        ClinicalAttention attention = attentions.findById(id);
+
+        if (attention == null) {
+            throw new IllegalArgumentException("Atención inexistente");
+        }
+
+        return attention;
+    }
+}
+```
+
+### **8.5. TreatmentService.java**
+
+El registro de tratamientos no ejecuta ventas ni descuenta existencias. El catálogo comercial se consulta únicamente para identificar medicamentos.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class TreatmentService implements TreatmentUseCase {
+
+    private final TreatmentRepositoryPort treatments;
+    private final ClinicalRecordPort records;
+    private final PatientRepositoryPort patients;
+    private final FollowUpUseCase followUps;
+    private final ActorPort actors;
+    private final MedicationLookupPort medications;
+
+    public TreatmentService(
+        TreatmentRepositoryPort treatments,
+        ClinicalRecordPort records,
+        PatientRepositoryPort patients,
+        FollowUpUseCase followUps,
+        ActorPort actors,
+        MedicationLookupPort medications
+    ) {
+        this.treatments = treatments;
+        this.records = records;
+        this.patients = patients;
+        this.followUps = followUps;
+        this.actors = actors;
+        this.medications = medications;
+    }
+
+    @Transactional
+    public Treatment registerTreatment(TreatmentRequest r) {
+        vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.description() == null || r.description().isBlank() ||
+            r.instructions() == null || r.instructions().isBlank()) {
+            throw new IllegalArgumentException(
+                "Tratamiento e indicaciones requeridos"
+            );
+        }
+
+        return treatments.saveTreatment(
+            new Treatment(
+                0, consultation.id(), r.description(), r.instructions(),
+                r.productId(), LocalDateTime.now(), vet().id()
+            )
+        );
+    }
+
+    @Transactional
+    public ClinicalProcedure registerProcedure(ProcedureRequest r) {
+        vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.name() == null || r.name().isBlank()) {
+            throw new IllegalArgumentException(
+                "Indique procedimiento realizado"
+            );
+        }
+
+        return treatments.saveProcedure(
+            new ClinicalProcedure(
+                0, consultation.id(), r.name(), r.observations(),
+                LocalDateTime.now(), vet().id()
+            )
+        );
+    }
+
+    @Transactional
+    public Vaccination registerVaccination(VaccinationRequest r) {
+        Actor actor = vet();
+
+        if (r == null || patients.findById(r.petId()) == null ||
+            r.vaccine() == null || r.vaccine().isBlank() ||
+            r.dose() == null || r.dose().isBlank()) {
+            throw new IllegalArgumentException(
+                "Paciente, vacuna y dosis son requeridos"
+            );
+        }
+
+        if (r.consultationId() != null &&
+            activeConsultation(r.consultationId()).petId() != r.petId()) {
+            throw new IllegalArgumentException(
+                "La consulta pertenece a otro paciente"
+            );
+        }
+
+        Vaccination saved = treatments.saveVaccination(
+            new Vaccination(
+                0, r.petId(), r.consultationId(),
+                r.vaccine(), r.dose(), LocalDateTime.now(),
+                r.nextDoseDate(), actor.id()
+            )
+        );
+
+        if (r.nextDoseDate() != null) {
+            followUps.scheduleFollowUp(
+                new FollowUpRequest(
+                    r.petId(), r.consultationId(),
+                    "Próxima dosis de " + r.vaccine(),
+                    r.nextDoseDate().atTime(9, 0), null
+                )
+            );
+        }
+
+        return saved;
+    }
+
+    @Transactional
+    public Referral registerReferral(ReferralRequest r) {
+        vet();
+        MedicalConsultation consultation = activeConsultation(r.consultationId());
+
+        if (r.reason() == null || r.reason().isBlank()) {
+            throw new IllegalArgumentException(
+                "Indique motivo de derivación"
+            );
+        }
+
+        return treatments.saveReferral(
+            new Referral(
+                0, consultation.id(), r.reason(),
+                r.destination(), LocalDateTime.now(), vet().id()
+            )
+        );
+    }
+
+    public java.util.List<MedicationDetail> getMedicationOptions(String search) {
+        vet();
+        return medications.search(search == null ? "" : search);
+    }
+
+    private Actor vet() {
+        return ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "VETERINARIO",
+            "VETERINARIAN", "ESPECIALISTA"
+        );
+    }
+
+    private MedicalConsultation activeConsultation(long id) {
+        MedicalConsultation consultation = records.findConsultation(id);
+
+        if (consultation == null ||
+            "COMPLETED".equals(consultation.status())) {
+            throw new IllegalStateException(
+                "Consulta no disponible"
+            );
+        }
+
+        return consultation;
+    }
+}
+```
+
+### **8.6. AppointmentService.java**
+
+Las operaciones de programación y reprogramación emplean aislamiento SERIALIZABLE para proteger la verificación de citas superpuestas dentro de una transacción SQL Server.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import java.time.Duration;
+import java.util.List;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class AppointmentService implements AppointmentUseCase {
+
+    private final AppointmentRepositoryPort appointments;
+    private final PatientRepositoryPort patients;
+    private final ClinicalRecordPort records;
+    private final FollowUpUseCase followUps;
+    private final ActorPort actors;
+    private final ProfessionalLookupPort professionals;
+
+    public AppointmentService(
+        AppointmentRepositoryPort appointments,
+        PatientRepositoryPort patients,
+        ClinicalRecordPort records,
+        FollowUpUseCase followUps,
+        ActorPort actors,
+        ProfessionalLookupPort professionals
+    ) {
+        this.appointments = appointments;
+        this.patients = patients;
+        this.records = records;
+        this.followUps = followUps;
+        this.actors = actors;
+        this.professionals = professionals;
+    }
+
+    public List<Appointment> getAvailability(AvailabilityFilter f) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (f == null || f.start() == null || f.end() == null ||
+            !f.end().isAfter(f.start())) {
+            throw new IllegalArgumentException(
+                "Rango de consulta inválido"
+            );
+        }
+
+        return appointments.findAvailability(
+            f.professionalId(), f.start(), f.end()
+        );
+    }
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public Appointment scheduleAppointment(AppointmentRequest request) {
+        return create(request, "GENERAL");
+    }
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public Appointment scheduleFollowUp(AppointmentRequest request) {
+        Appointment appointment = create(request, "FOLLOW_UP");
+
+        followUps.scheduleFollowUp(
+            new FollowUpRequest(
+                appointment.petId(), appointment.consultationId(),
+                "Cita de seguimiento: " + appointment.reason(),
+                appointment.startsAt(), appointment.id()
+            )
+        );
+
+        return appointment;
+    }
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public Appointment scheduleSpecialist(AppointmentRequest request) {
+        if (request == null ||
+            request.specialty() == null ||
+            request.specialty().isBlank()) {
+            throw new IllegalArgumentException(
+                "La especialidad es obligatoria"
+            );
+        }
+
+        return create(request, "SPECIALIST");
+    }
+
+    private Appointment create(AppointmentRequest r, String type) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null ||
+            r.professionalId() <= 0 || r.date() == null ||
+            r.reason() == null || r.reason().isBlank()) {
+            throw new IllegalArgumentException(
+                "Datos de cita incompletos"
+            );
+        }
+
+        if (!professionals.canAttend(r.professionalId())) {
+            throw new IllegalArgumentException(
+                "El usuario no es un profesional clínico activo"
+            );
+        }
+
+        if ("SPECIALIST".equals(type) &&
+            !professionals.hasSpecialty(r.professionalId(), r.specialty())) {
+            throw new IllegalArgumentException(
+                "El profesional no tiene la especialidad seleccionada"
+            );
+        }
+
+        int duration = r.durationMinutes() == 0
+            ? 30 : r.durationMinutes();
+
+        if (duration < 15 || duration > 180 ||
+            !r.date().isAfter(LocalDateTime.now())) {
+            throw new IllegalArgumentException(
+                "Horario o duración inválidos"
+            );
+        }
+
+        if (r.consultationId() != null) {
+            MedicalConsultation consultation =
+                records.findConsultation(r.consultationId());
+
+            if (consultation == null ||
+                consultation.petId() != r.petId()) {
+                throw new IllegalArgumentException(
+                    "Referencia clínica incorrecta"
+                );
+            }
+        }
+
+        LocalDateTime end = r.date().plusMinutes(duration);
+
+        if (appointments.hasConflict(
+            r.professionalId(), r.date(), end, 0
+        )) {
+            throw new IllegalStateException(
+                "El profesional ya tiene cita en ese horario"
+            );
+        }
+
+        return appointments.save(
+            new Appointment(
+                0, r.petId(), r.professionalId(),
+                type + ": " + r.reason(),
+                r.date(), end, "CONFIRMED",
+                r.specialty(), r.consultationId(),
+                LocalDateTime.now(), false
+            )
+        );
+    }
+
+    @Transactional(isolation = Isolation.SERIALIZABLE)
+    public void rescheduleAppointment(long id, LocalDateTime date) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        Appointment appointment = appointments.findById(id);
+
+        if (appointment == null ||
+            !"CONFIRMED".equals(appointment.status()) ||
+            date == null || !date.isAfter(LocalDateTime.now())) {
+            throw new IllegalStateException(
+                "La cita no puede reprogramarse"
+            );
+        }
+
+        LocalDateTime end = date.plus(
+            Duration.between(
+                appointment.startsAt(), appointment.endsAt()
+            )
+        );
+
+        if (appointments.hasConflict(
+            appointment.professionalId(), date, end, id
+        )) {
+            throw new IllegalStateException(
+                "El nuevo horario está ocupado"
+            );
+        }
+
+        appointments.reschedule(id, date, end);
+        followUps.rescheduleAppointmentFollowUp(id, date);
+    }
+
+    @Transactional
+    public void cancelAppointment(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        Appointment appointment = appointments.findById(id);
+
+        if (appointment == null ||
+            !"CONFIRMED".equals(appointment.status())) {
+            throw new IllegalStateException(
+                "La cita no puede cancelarse"
+            );
+        }
+
+        appointments.cancel(id);
+        followUps.cancelAppointmentFollowUp(id);
+    }
+}
+```
+
+### **8.7. FollowUpService.java**
+
+Este servicio implementa la revisión automática de seguimientos y recordatorios de citas. No realiza directamente llamadas SMTP ni SMS; utiliza NotificationDispatchPort.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.FollowUpRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.FollowUpUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class FollowUpService implements FollowUpUseCase {
+
+    private final FollowUpRepositoryPort followUps;
+    private final AppointmentRepositoryPort appointments;
+    private final PatientRepositoryPort patients;
+    private final ClinicalRecordPort records;
+    private final NotificationDispatchPort notifications;
+    private final ActorPort actors;
+
+    public FollowUpService(
+        FollowUpRepositoryPort followUps,
+        AppointmentRepositoryPort appointments,
+        PatientRepositoryPort patients,
+        ClinicalRecordPort records,
+        NotificationDispatchPort notifications,
+        ActorPort actors
+    ) {
+        this.followUps = followUps;
+        this.appointments = appointments;
+        this.patients = patients;
+        this.records = records;
+        this.notifications = notifications;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public FollowUp scheduleFollowUp(FollowUpRequest r) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        if (r == null || patients.findById(r.petId()) == null ||
+            r.dueAt() == null ||
+            r.reason() == null || r.reason().isBlank()) {
+            throw new IllegalArgumentException(
+                "Seguimiento inválido"
+            );
+        }
+
+        if (r.consultationId() != null) {
+            MedicalConsultation consultation =
+                records.findConsultation(r.consultationId());
+
+            if (consultation == null ||
+                consultation.petId() != r.petId()) {
+                throw new IllegalArgumentException(
+                    "Referencia clínica incorrecta"
+                );
+            }
+        }
+
+        return followUps.save(
+            new FollowUp(
+                0, r.petId(), r.consultationId(), r.reason(),
+                r.dueAt(), "PENDING", null, r.appointmentId()
+            )
+        );
+    }
+
+    public List<FollowUp> getPendingFollowUps() {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        return followUps.findOutstanding();
+    }
+
+    public void reviewPendingFollowUps() {
+        LocalDateTime now = LocalDateTime.now();
+
+        for (FollowUp followUp : followUps.findPending(now)) {
+            Pet pet = patients.findById(followUp.petId());
+
+            if (pet != null && notifications.send(
+                pet.ownerId(),
+                "FOLLOWUP-" + followUp.id(),
+                "Seguimiento clínico",
+                followUp.reason()
+            )) {
+                followUps.markReviewed(followUp.id());
+            }
+        }
+
+        for (Appointment appointment :
+            appointments.findReminderCandidates(now, now.plusDays(1))) {
+
+            Pet pet = patients.findById(appointment.petId());
+
+            if (pet != null && notifications.send(
+                pet.ownerId(),
+                "APPOINTMENT-" + appointment.id(),
+                "Recordatorio de cita",
+                appointment.reason()
+            )) {
+                appointments.markReminderSent(appointment.id());
+            }
+        }
+    }
+
+    @Transactional
+    public void rescheduleAppointmentFollowUp(
+        long appointmentId,
+        LocalDateTime date
+    ) {
+        followUps.rescheduleByAppointment(appointmentId, date);
+    }
+
+    @Transactional
+    public void cancelAppointmentFollowUp(long appointmentId) {
+        followUps.cancelByAppointment(appointmentId);
+    }
+
+    @Transactional
+    public void completeFollowUp(long id) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN", "RECEPCIONISTA",
+            "RECEPTIONIST", "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+        );
+
+        FollowUp followUp = followUps.findById(id);
+
+        if (followUp == null) {
+            throw new IllegalArgumentException(
+                "Seguimiento inexistente"
+            );
+        }
+
+        followUps.complete(id);
+    }
+}
+```
+
+### **8.8. WeightPolicyService.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.WeightRangeRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.WeightPolicyUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class WeightPolicyService implements WeightPolicyUseCase {
+
+    private final WeightPolicyPort policies;
+    private final ActorPort actors;
+
+    public WeightPolicyService(
+        WeightPolicyPort policies,
+        ActorPort actors
+    ) {
+        this.policies = policies;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public void configure(WeightRangeRequest r) {
+        ClinicalAccess.require(
+            actors, "VETERINARIO", "VETERINARIAN",
+            "ESPECIALISTA", "ADMINISTRADOR", "ADMIN"
+        );
+
+        if (r == null || r.species() == null ||
+            r.species().isBlank() ||
+            r.minimum() == null || r.maximum() == null ||
+            r.minimum().signum() <= 0 ||
+            r.maximum().compareTo(r.minimum()) < 0) {
+            throw new IllegalArgumentException(
+                "Rango de peso inválido"
+            );
+        }
+
+        policies.configure(
+            r.species().trim(), r.minimum(), r.maximum()
+        );
+    }
+}
+```
+
+### **Verificación de la capa de aplicación**
+
+Los seis servicios principales del diagrama están cubiertos:
+
+| Clase               | Puerto implementado |
+| ------------------- | ------------------- |
+| PatientService      | PatientUseCase      |
+| AttentionService    | AttentionUseCase    |
+| ConsultationService | ConsultationUseCase |
+| TreatmentService    | TreatmentUseCase    |
+| AppointmentService  | AppointmentUseCase  |
+| FollowUpService     | FollowUpUseCase     |
+
+WeightPolicyService añade la configuración necesaria para la advertencia clínica de peso contemplada en los requisitos de calidad.
+
+Las dependencias son compatibles: todos los servicios consumen puertos de salida, no clases SQL. Los tres workflows implementan AttentionWorkflow y Spring puede inyectarlos como una lista en AttentionService.
+
+La compilación conjunta de estas clases y sus dependencias Java se verificó con JDK 21. Esto todavía no equivale a una prueba funcional contra SQL Server ni contra los módulos Commercial y Notification reales.
+
+## **9. Infraestructura: persistencia SQL Server**
+
+Ruta:
+
+`clinical/infrastructure/output/persistence/`
+
+Los adaptadores utilizarán JdbcTemplate. Cada uno implementa un puerto de salida y concentra el SQL de las entidades correspondientes.
+
+### **9.1. SqlClinicalMappers.java**
+
+Esta clase es compartida únicamente dentro de la infraestructura de persistencia. Reconstruye las entidades de dominio a partir de los registros SQL Server.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import org.springframework.jdbc.core.RowMapper;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+
+final class SqlClinicalMappers {
+
+    private SqlClinicalMappers() {}
+
+    static Long nullableLong(ResultSet result, String column)
+        throws SQLException {
+        long value = result.getLong(column);
+        return result.wasNull() ? null : value;
+    }
+
+    static LocalDateTime dateTime(ResultSet result, String column)
+        throws SQLException {
+        var timestamp = result.getTimestamp(column);
+        return timestamp == null ? null : timestamp.toLocalDateTime();
+    }
+
+    static final RowMapper<Pet> PET = (r, n) -> new Pet(
+        r.getLong("id"),
+        r.getLong("owner_id"),
+        r.getString("name"),
+        r.getString("species"),
+        r.getString("breed"),
+        r.getString("sex"),
+        r.getDate("birth_date") == null
+            ? null : r.getDate("birth_date").toLocalDate(),
+        (Integer) r.getObject("estimated_age_months")
+    );
+
+    static final RowMapper<ClinicalAttention> ATTENTION = (r, n) ->
+        new ClinicalAttention(
+            r.getLong("id"),
+            r.getLong("pet_id"),
+            r.getString("type"),
+            (Integer) r.getObject("priority"),
+            r.getString("urgency_description"),
+            nullableLong(r, "priority_assigned_by"),
+            r.getString("state"),
+            dateTime(r, "arrived_at"),
+            r.getBoolean("requires_grooming"),
+            r.getBoolean("clinical_closed"),
+            nullableLong(r, "consultation_id")
+        );
+
+    static final RowMapper<MedicalConsultation> CONSULTATION = (r, n) ->
+        new MedicalConsultation(
+            r.getLong("id"),
+            r.getLong("attention_id"),
+            r.getLong("pet_id"),
+            r.getLong("veterinarian_id"),
+            r.getString("reason"),
+            r.getBigDecimal("weight"),
+            r.getString("symptoms"),
+            r.getString("observations"),
+            r.getString("status"),
+            dateTime(r, "created_at")
+        );
+
+    static final RowMapper<Diagnosis> DIAGNOSIS = (r, n) -> new Diagnosis(
+        r.getLong("id"),
+        r.getLong("consultation_id"),
+        r.getString("description"),
+        r.getString("indications"),
+        r.getLong("author_id"),
+        dateTime(r, "created_at")
+    );
+
+    static final RowMapper<Treatment> TREATMENT = (r, n) -> new Treatment(
+        r.getLong("id"),
+        r.getLong("consultation_id"),
+        r.getString("description"),
+        r.getString("instructions"),
+        nullableLong(r, "product_id"),
+        dateTime(r, "prescribed_at"),
+        r.getLong("author_id")
+    );
+
+    static final RowMapper<ClinicalProcedure> PROCEDURE = (r, n) ->
+        new ClinicalProcedure(
+            r.getLong("id"),
+            r.getLong("consultation_id"),
+            r.getString("name"),
+            r.getString("observations"),
+            dateTime(r, "performed_at"),
+            r.getLong("author_id")
+        );
+
+    static final RowMapper<Vaccination> VACCINATION = (r, n) ->
+        new Vaccination(
+            r.getLong("id"),
+            r.getLong("pet_id"),
+            nullableLong(r, "consultation_id"),
+            r.getString("vaccine"),
+            r.getString("dose"),
+            dateTime(r, "applied_at"),
+            r.getDate("next_dose_date") == null
+                ? null : r.getDate("next_dose_date").toLocalDate(),
+            r.getLong("veterinarian_id")
+        );
+
+    static final RowMapper<Referral> REFERRAL = (r, n) -> new Referral(
+        r.getLong("id"),
+        r.getLong("consultation_id"),
+        r.getString("reason"),
+        r.getString("destination"),
+        dateTime(r, "created_at"),
+        r.getLong("author_id")
+    );
+
+    static final RowMapper<Appointment> APPOINTMENT = (r, n) ->
+        new Appointment(
+            r.getLong("id"),
+            r.getLong("pet_id"),
+            r.getLong("professional_id"),
+            r.getString("reason"),
+            dateTime(r, "starts_at"),
+            dateTime(r, "ends_at"),
+            r.getString("status"),
+            r.getString("specialty"),
+            nullableLong(r, "consultation_id"),
+            dateTime(r, "created_at"),
+            r.getBoolean("reminder_sent")
+        );
+
+    static final RowMapper<FollowUp> FOLLOWUP = (r, n) -> new FollowUp(
+        r.getLong("id"),
+        r.getLong("pet_id"),
+        nullableLong(r, "consultation_id"),
+        r.getString("reason"),
+        dateTime(r, "due_at"),
+        r.getString("status"),
+        dateTime(r, "reviewed_at"),
+        nullableLong(r, "appointment_id")
+    );
+}
+```
+
+### **9.2. SqlPatientAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.PatientRepositoryPort;
+
+@Repository
+public class SqlPatientAdapter implements PatientRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlPatientAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Pet save(Pet pet) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalPet " +
+            "(owner_id,name,species,breed,sex,birth_date,estimated_age_months) " +
+            "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?,?)",
+            Long.class,
+            pet.ownerId(), pet.name(), pet.species(),
+            pet.breed(), pet.sex(), pet.birthDate(),
+            pet.estimatedAgeMonths()
+        );
+
+        return new Pet(
+            id, pet.ownerId(), pet.name(), pet.species(),
+            pet.breed(), pet.sex(), pet.birthDate(),
+            pet.estimatedAgeMonths()
+        );
+    }
+
+    public Pet findById(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalPet WHERE id=?",
+            SqlClinicalMappers.PET, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<Pet> search(String criteria) {
+        String term = "%" + criteria + "%";
+
+        return jdbc.query(
+            "SELECT p.* FROM dbo.ClinicalPet p " +
+            "JOIN dbo.Customer c ON c.id=p.owner_id " +
+            "WHERE p.name LIKE ? OR CAST(p.id AS VARCHAR(30)) LIKE ? " +
+            "OR c.document_number LIKE ? ORDER BY p.name",
+            SqlClinicalMappers.PET, term, term, term
+        );
+    }
+}
+```
+
+### **9.3. SqlAttentionAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.AttentionRepositoryPort;
+
+@Repository
+public class SqlAttentionAdapter implements AttentionRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlAttentionAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public ClinicalAttention save(ClinicalAttention attention) {
+        if (attention.getId() == 0) {
+            Long id = jdbc.queryForObject(
+                "INSERT INTO dbo.ClinicalAttention " +
+                "(pet_id,type,priority,urgency_description," +
+                "priority_assigned_by,state,arrived_at,requires_grooming," +
+                "clinical_closed,consultation_id) " +
+                "OUTPUT INSERTED.id VALUES (?,?,?,?,?,?,?,?,?,?)",
+                Long.class,
+                attention.getPetId(),
+                attention.getType(),
+                attention.getPriority(),
+                attention.getUrgencyDescription(),
+                attention.getPriorityAssignedBy(),
+                attention.getStatus(),
+                attention.getArrivedAt(),
+                attention.isRequiresGrooming(),
+                attention.isClinicalClosed(),
+                attention.getConsultationId()
+            );
+
+            attention.setId(id);
+        } else {
+            jdbc.update(
+                "UPDATE dbo.ClinicalAttention SET " +
+                "type=?,priority=?,urgency_description=?," +
+                "priority_assigned_by=?,state=?,arrived_at=?," +
+                "requires_grooming=?,clinical_closed=?,consultation_id=? " +
+                "WHERE id=?",
+                attention.getType(),
+                attention.getPriority(),
+                attention.getUrgencyDescription(),
+                attention.getPriorityAssignedBy(),
+                attention.getStatus(),
+                attention.getArrivedAt(),
+                attention.isRequiresGrooming(),
+                attention.isClinicalClosed(),
+                attention.getConsultationId(),
+                attention.getId()
+            );
+        }
+
+        return attention;
+    }
+
+    public ClinicalAttention findById(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAttention WHERE id=?",
+            SqlClinicalMappers.ATTENTION, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public ClinicalAttention findOpenByPet(long petId) {
+        return jdbc.query(
+            "SELECT TOP 1 * FROM dbo.ClinicalAttention " +
+            "WHERE pet_id=? AND state<>'ATENDIDO' ORDER BY id DESC",
+            SqlClinicalMappers.ATTENTION, petId
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<ClinicalAttention> findWaiting() {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAttention " +
+            "WHERE state='EN_ESPERA' AND arrived_at IS NOT NULL " +
+            "ORDER BY CASE WHEN priority IS NULL THEN 1 ELSE 0 END, " +
+            "priority, arrived_at",
+            SqlClinicalMappers.ATTENTION
+        );
+    }
+
+    public void auditPriority(
+        long attentionId,
+        long veterinarianId,
+        int priority
+    ) {
+        jdbc.update(
+            "INSERT INTO dbo.ClinicalPriorityAudit " +
+            "(attention_id,veterinarian_id,priority) VALUES(?,?,?)",
+            attentionId, veterinarianId, priority
+        );
+    }
+}
+```
+
+### **9.4. SqlClinicalRecordAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.ClinicalRecordPort;
+
+@Repository
+public class SqlClinicalRecordAdapter implements ClinicalRecordPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlClinicalRecordAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public MedicalConsultation saveConsultation(MedicalConsultation c) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.MedicalConsultation " +
+            "(attention_id,pet_id,veterinarian_id,reason,weight," +
+            "symptoms,observations,status,created_at) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?,?,?,?,?)",
+            Long.class,
+            c.attentionId(), c.petId(), c.veterinarianId(),
+            c.reason(), c.weight(), c.symptoms(),
+            c.observations(), c.status(), c.createdAt()
+        );
+
+        return new MedicalConsultation(
+            id, c.attentionId(), c.petId(), c.veterinarianId(),
+            c.reason(), c.weight(), c.symptoms(),
+            c.observations(), c.status(), c.createdAt()
+        );
+    }
+
+    public MedicalConsultation findConsultation(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.MedicalConsultation WHERE id=?",
+            SqlClinicalMappers.CONSULTATION, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<MedicalConsultation> listByPet(long petId) {
+        return jdbc.query(
+            "SELECT * FROM dbo.MedicalConsultation " +
+            "WHERE pet_id=? ORDER BY created_at DESC",
+            SqlClinicalMappers.CONSULTATION, petId
+        );
+    }
+
+    public List<Diagnosis> listDiagnosesByPet(long petId) {
+        return jdbc.query(
+            "SELECT d.* FROM dbo.ClinicalDiagnosis d " +
+            "JOIN dbo.MedicalConsultation c " +
+            "ON c.id=d.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY d.created_at DESC",
+            SqlClinicalMappers.DIAGNOSIS, petId
+        );
+    }
+
+    public Diagnosis saveDiagnosis(Diagnosis diagnosis) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalDiagnosis " +
+            "(consultation_id,description,indications,author_id,created_at) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?)",
+            Long.class,
+            diagnosis.consultationId(),
+            diagnosis.description(),
+            diagnosis.indications(),
+            diagnosis.authorId(),
+            diagnosis.createdAt()
+        );
+
+        return new Diagnosis(
+            id, diagnosis.consultationId(),
+            diagnosis.description(), diagnosis.indications(),
+            diagnosis.authorId(), diagnosis.createdAt()
+        );
+    }
+
+    public boolean hasCompleteDiagnosis(long consultationId) {
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.ClinicalDiagnosis " +
+            "WHERE consultation_id=? " +
+            "AND NULLIF(LTRIM(RTRIM(description)),'') IS NOT NULL " +
+            "AND NULLIF(LTRIM(RTRIM(indications)),'') IS NOT NULL",
+            Integer.class, consultationId
+        );
+
+        return count != null && count > 0;
+    }
+
+    public void completeConsultation(long id, long actorId) {
+        int affected = jdbc.update(
+            "UPDATE dbo.MedicalConsultation SET " +
+            "status='COMPLETED',last_modified_by=?," +
+            "last_modified_at=SYSDATETIME() " +
+            "WHERE id=? AND status='OPEN'",
+            actorId, id
+        );
+
+        if (affected != 1) {
+            throw new IllegalStateException(
+                "Consulta finalizada o modificada simultáneamente"
+            );
+        }
+    }
+}
+```
+
+### **9.5. SqlTreatmentAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.time.LocalDate;
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.TreatmentRepositoryPort;
+
+@Repository
+public class SqlTreatmentAdapter implements TreatmentRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlTreatmentAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Treatment saveTreatment(Treatment treatment) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalTreatment " +
+            "(consultation_id,description,instructions,product_id," +
+            "prescribed_at,author_id) OUTPUT INSERTED.id " +
+            "VALUES(?,?,?,?,?,?)",
+            Long.class,
+            treatment.consultationId(), treatment.description(),
+            treatment.instructions(), treatment.productId(),
+            treatment.prescribedAt(), treatment.authorId()
+        );
+
+        return new Treatment(
+            id, treatment.consultationId(), treatment.description(),
+            treatment.instructions(), treatment.productId(),
+            treatment.prescribedAt(), treatment.authorId()
+        );
+    }
+
+    public ClinicalProcedure saveProcedure(ClinicalProcedure procedure) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalProcedure " +
+            "(consultation_id,name,observations,performed_at,author_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?)",
+            Long.class,
+            procedure.consultationId(), procedure.name(),
+            procedure.observations(), procedure.performedAt(),
+            procedure.authorId()
+        );
+
+        return new ClinicalProcedure(
+            id, procedure.consultationId(), procedure.name(),
+            procedure.observations(), procedure.performedAt(),
+            procedure.authorId()
+        );
+    }
+
+    public Vaccination saveVaccination(Vaccination vaccination) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalVaccination " +
+            "(pet_id,consultation_id,vaccine,dose,applied_at," +
+            "next_dose_date,veterinarian_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?,?,?)",
+            Long.class,
+            vaccination.petId(), vaccination.consultationId(),
+            vaccination.vaccine(), vaccination.dose(),
+            vaccination.appliedAt(), vaccination.nextDoseDate(),
+            vaccination.veterinarianId()
+        );
+
+        return new Vaccination(
+            id, vaccination.petId(), vaccination.consultationId(),
+            vaccination.vaccine(), vaccination.dose(),
+            vaccination.appliedAt(), vaccination.nextDoseDate(),
+            vaccination.veterinarianId()
+        );
+    }
+
+    public Referral saveReferral(Referral referral) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalReferral " +
+            "(consultation_id,reason,destination,created_at,author_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?)",
+            Long.class,
+            referral.consultationId(), referral.reason(),
+            referral.destination(), referral.createdAt(),
+            referral.authorId()
+        );
+
+        return new Referral(
+            id, referral.consultationId(), referral.reason(),
+            referral.destination(), referral.createdAt(),
+            referral.authorId()
+        );
+    }
+
+    public List<Treatment> listTreatmentsByPet(long petId) {
+        return jdbc.query(
+            "SELECT t.* FROM dbo.ClinicalTreatment t " +
+            "JOIN dbo.MedicalConsultation c ON c.id=t.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY t.prescribed_at DESC",
+            SqlClinicalMappers.TREATMENT, petId
+        );
+    }
+
+    public List<ClinicalProcedure> listProceduresByPet(long petId) {
+        return jdbc.query(
+            "SELECT p.* FROM dbo.ClinicalProcedure p " +
+            "JOIN dbo.MedicalConsultation c ON c.id=p.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY p.performed_at DESC",
+            SqlClinicalMappers.PROCEDURE, petId
+        );
+    }
+
+    public List<Referral> listReferralsByPet(long petId) {
+        return jdbc.query(
+            "SELECT r.* FROM dbo.ClinicalReferral r " +
+            "JOIN dbo.MedicalConsultation c ON c.id=r.consultation_id " +
+            "WHERE c.pet_id=? ORDER BY r.created_at DESC",
+            SqlClinicalMappers.REFERRAL, petId
+        );
+    }
+
+    public List<Vaccination> listVaccinations(long petId) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalVaccination " +
+            "WHERE pet_id=? ORDER BY applied_at DESC",
+            SqlClinicalMappers.VACCINATION, petId
+        );
+    }
+
+    public List<LocalDate> findPendingDoses(LocalDate date) {
+        return jdbc.query(
+            "SELECT next_dose_date FROM dbo.ClinicalVaccination " +
+            "WHERE next_dose_date<=?",
+            (r, n) -> r.getDate(1).toLocalDate(),
+            date
+        );
+    }
+}
+```
+
+### **9.6. SqlAppointmentAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.Appointment;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.AppointmentRepositoryPort;
+
+@Repository
+public class SqlAppointmentAdapter implements AppointmentRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlAppointmentAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Appointment save(Appointment appointment) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalAppointment " +
+            "(pet_id,professional_id,reason,starts_at,ends_at,status," +
+            "specialty,consultation_id,created_at,reminder_sent) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?,?,?,?,?,?)",
+            Long.class,
+            appointment.petId(), appointment.professionalId(),
+            appointment.reason(), appointment.startsAt(),
+            appointment.endsAt(), appointment.status(),
+            appointment.specialty(), appointment.consultationId(),
+            appointment.createdAt(), appointment.reminderSent()
+        );
+
+        return new Appointment(
+            id, appointment.petId(), appointment.professionalId(),
+            appointment.reason(), appointment.startsAt(),
+            appointment.endsAt(), appointment.status(),
+            appointment.specialty(), appointment.consultationId(),
+            appointment.createdAt(), appointment.reminderSent()
+        );
+    }
+
+    public Appointment findById(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAppointment WHERE id=?",
+            SqlClinicalMappers.APPOINTMENT, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<Appointment> findAvailability(
+        long professionalId,
+        LocalDateTime start,
+        LocalDateTime end
+    ) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAppointment " +
+            "WHERE professional_id=? AND status='CONFIRMED' " +
+            "AND starts_at<? AND ends_at>? ORDER BY starts_at",
+            SqlClinicalMappers.APPOINTMENT,
+            professionalId, end, start
+        );
+    }
+
+    public boolean hasConflict(
+        long professionalId,
+        LocalDateTime start,
+        LocalDateTime end,
+        long excludedId
+    ) {
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.ClinicalAppointment " +
+            "WITH (UPDLOCK,HOLDLOCK) " +
+            "WHERE professional_id=? AND id<>? " +
+            "AND status='CONFIRMED' AND starts_at<? AND ends_at>?",
+            Integer.class,
+            professionalId, excludedId, end, start
+        );
+
+        return count != null && count > 0;
+    }
+
+    public void reschedule(
+        long id,
+        LocalDateTime start,
+        LocalDateTime end
+    ) {
+        int affected = jdbc.update(
+            "UPDATE dbo.ClinicalAppointment SET " +
+            "starts_at=?,ends_at=?,reminder_sent=0 " +
+            "WHERE id=? AND status='CONFIRMED'",
+            start, end, id
+        );
+
+        if (affected != 1) {
+            throw new IllegalStateException(
+                "No se pudo reprogramar"
+            );
+        }
+    }
+
+    public void cancel(long id) {
+        int affected = jdbc.update(
+            "UPDATE dbo.ClinicalAppointment SET status='CANCELLED' " +
+            "WHERE id=? AND status='CONFIRMED'",
+            id
+        );
+
+        if (affected != 1) {
+            throw new IllegalStateException(
+                "No se pudo cancelar"
+            );
+        }
+    }
+
+    public List<Appointment> findReminderCandidates(
+        LocalDateTime now,
+        LocalDateTime until
+    ) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalAppointment " +
+            "WHERE status='CONFIRMED' AND reminder_sent=0 " +
+            "AND starts_at>? AND starts_at<=? " +
+            "AND DATEDIFF(MINUTE,created_at,starts_at)>=1440 " +
+            "ORDER BY starts_at",
+            SqlClinicalMappers.APPOINTMENT, now, until
+        );
+    }
+
+    public void markReminderSent(long id) {
+        jdbc.update(
+            "UPDATE dbo.ClinicalAppointment SET reminder_sent=1 " +
+            "WHERE id=? AND status='CONFIRMED' AND reminder_sent=0",
+            id
+        );
+    }
+}
+```
+
+### **9.7. SqlFollowUpAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.FollowUp;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.FollowUpRepositoryPort;
+
+@Repository
+public class SqlFollowUpAdapter implements FollowUpRepositoryPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlFollowUpAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public FollowUp save(FollowUp followUp) {
+        Long id = jdbc.queryForObject(
+            "INSERT INTO dbo.ClinicalFollowUp " +
+            "(pet_id,consultation_id,reason,due_at,status," +
+            "reviewed_at,appointment_id) " +
+            "OUTPUT INSERTED.id VALUES(?,?,?,?,?,?,?)",
+            Long.class,
+            followUp.petId(), followUp.consultationId(),
+            followUp.reason(), followUp.dueAt(),
+            followUp.status(), followUp.reviewedAt(),
+            followUp.appointmentId()
+        );
+
+        return new FollowUp(
+            id, followUp.petId(), followUp.consultationId(),
+            followUp.reason(), followUp.dueAt(),
+            followUp.status(), followUp.reviewedAt(),
+            followUp.appointmentId()
+        );
+    }
+
+    public FollowUp findById(long id) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalFollowUp WHERE id=?",
+            SqlClinicalMappers.FOLLOWUP, id
+        ).stream().findFirst().orElse(null);
+    }
+
+    public List<FollowUp> findPending(LocalDateTime until) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalFollowUp " +
+            "WHERE status='PENDING' AND due_at<=? ORDER BY due_at",
+            SqlClinicalMappers.FOLLOWUP, until
+        );
+    }
+
+    public List<FollowUp> findOutstanding() {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalFollowUp " +
+            "WHERE status IN ('PENDING','REVIEWED') ORDER BY due_at",
+            SqlClinicalMappers.FOLLOWUP
+        );
+    }
+
+    public List<FollowUp> listByPet(long petId) {
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalFollowUp " +
+            "WHERE pet_id=? ORDER BY due_at DESC",
+            SqlClinicalMappers.FOLLOWUP, petId
+        );
+    }
+
+    public void markReviewed(long id) {
+        jdbc.update(
+            "UPDATE dbo.ClinicalFollowUp SET " +
+            "status='REVIEWED',reviewed_at=SYSDATETIME() " +
+            "WHERE id=? AND status='PENDING'",
+            id
+        );
+    }
+
+    public void rescheduleByAppointment(
+        long appointmentId,
+        LocalDateTime date
+    ) {
+        jdbc.update(
+            "UPDATE dbo.ClinicalFollowUp SET " +
+            "due_at=?,reviewed_at=NULL,status='PENDING' " +
+            "WHERE appointment_id=? AND status<>'COMPLETED'",
+            date, appointmentId
+        );
+    }
+
+    public void cancelByAppointment(long appointmentId) {
+        jdbc.update(
+            "UPDATE dbo.ClinicalFollowUp SET status='COMPLETED' " +
+            "WHERE appointment_id=? AND status<>'COMPLETED'",
+            appointmentId
+        );
+    }
+
+    public void complete(long id) {
+        int affected = jdbc.update(
+            "UPDATE dbo.ClinicalFollowUp SET status='COMPLETED' " +
+            "WHERE id=? AND status IN ('PENDING','REVIEWED')",
+            id
+        );
+
+        if (affected != 1) {
+            throw new IllegalStateException(
+                "Seguimiento no disponible"
+            );
+        }
+    }
+}
+```
+
+### **9.8. SqlWeightPolicyAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import java.math.BigDecimal;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.WeightPolicyPort;
+
+@Repository
+public class SqlWeightPolicyAdapter implements WeightPolicyPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlWeightPolicyAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public String warning(String species, BigDecimal weight) {
+        return jdbc.query(
+            "SELECT min_kg,max_kg FROM dbo.ClinicalWeightPolicy " +
+            "WHERE species=?",
+            (r, n) -> {
+                BigDecimal minimum = r.getBigDecimal("min_kg");
+                BigDecimal maximum = r.getBigDecimal("max_kg");
+
+                if (weight.compareTo(minimum) < 0 ||
+                    weight.compareTo(maximum) > 0) {
+                    return "Advertencia: peso fuera del rango orientativo " +
+                        "configurado; requiere criterio veterinario";
+                }
+
+                return "";
+            },
+            species
+        ).stream().findFirst().orElse("");
+    }
+
+    public void configure(
+        String species,
+        BigDecimal minimum,
+        BigDecimal maximum
+    ) {
+        jdbc.update(
+            "UPDATE dbo.ClinicalWeightPolicy " +
+            "SET min_kg=?,max_kg=? WHERE species=?",
+            minimum, maximum, species
+        );
+
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.ClinicalWeightPolicy " +
+            "WHERE species=?",
+            Integer.class, species
+        );
+
+        if (count != null && count == 0) {
+            jdbc.update(
+                "INSERT INTO dbo.ClinicalWeightPolicy " +
+                "(species,min_kg,max_kg) VALUES(?,?,?)",
+                species, minimum, maximum
+            );
+        }
+    }
+}
+```
+
+### **9.9. SqlActorAdapter.java**
+
+El actor se obtiene de Spring Security y se contrasta con la tabla de usuarios y roles existente. La autorización de Clinical no debe depender de un actorId arbitrario enviado en el cuerpo JSON.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import com.donkan.sisvetclinic.modules.clinical.domain.Actor;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.ActorPort;
+
+@Repository
+public class SqlActorAdapter implements ActorPort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlActorAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Actor current() {
+        Authentication auth =
+            SecurityContextHolder.getContext().getAuthentication();
+
+        if (auth == null || !auth.isAuthenticated() ||
+            "anonymousUser".equals(auth.getPrincipal())) {
+            throw new SecurityException("Debe iniciar sesión");
+        }
+
+        return jdbc.query(
+            "SELECT u.id, r.name AS role_name " +
+            "FROM dbo.[User] u JOIN dbo.Role r ON r.id=u.role_id " +
+            "WHERE u.username=? AND u.record_status='Active'",
+            (r, n) -> new Actor(
+                r.getLong("id"), r.getString("role_name")
+            ),
+            auth.getName()
+        ).stream().findFirst().orElseThrow(
+            () -> new SecurityException(
+                "Cuenta sin permisos vigentes"
+            )
+        );
+    }
+}
+```
+
+Con estos nueve archivos quedan implementados todos los puertos de persistencia clínica definidos anteriormente.
+
+## **10. Integración con Commercial**
+
+Ruta:
+
+`clinical/infrastructure/output/commercial/`
+
+Estos adaptadores acceden a la línea base comercial documentada. Se mantienen fuera de domain y service, porque son detalles de integración con otro módulo.
+
+En esta implementación la comunicación se realiza mediante SQL Server compartido. Es una solución válida para el monolito modular actual, aunque para una separación futura de bases de datos sería preferible sustituir estas consultas por contratos públicos de Commercial.
+
+### **10.1. CommercialOwnerAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.commercial;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.OwnerLookupPort;
+
+@Repository
+public class CommercialOwnerAdapter implements OwnerLookupPort {
+
+    private final JdbcTemplate jdbc;
+
+    public CommercialOwnerAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public boolean existsOwner(long id) {
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.Customer " +
+            "WHERE id=? AND record_status='Active'",
+            Integer.class, id
+        );
+
+        return count != null && count > 0;
+    }
+}
+```
+
+### **10.2. CommercialChargeAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.commercial;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.ClinicalChargePort;
+
+@Repository
+public class CommercialChargeAdapter implements ClinicalChargePort {
+
+    private final JdbcTemplate jdbc;
+
+    public CommercialChargeAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public boolean isSettled(long consultationId) {
+        Integer pending = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.ClinicalCharge " +
+            "WHERE consultation_id=? " +
+            "AND (is_charged=0 OR sale_id IS NULL)",
+            Integer.class, consultationId
+        );
+
+        return pending != null && pending == 0;
+    }
+}
+```
+
+### **10.3. CommercialMedicationAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.commercial;
+
+import java.util.List;
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.MedicationDetail;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.MedicationLookupPort;
+
+@Repository
+public class CommercialMedicationAdapter implements MedicationLookupPort {
+
+    private final JdbcTemplate jdbc;
+
+    public CommercialMedicationAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public List<MedicationDetail> search(String text) {
+        return jdbc.query(
+            "SELECT p.id, p.name, d.active_ingredient, " +
+            "d.concentration, pp.name AS presentation " +
+            "FROM dbo.Product p " +
+            "JOIN dbo.ClinicalMedicationDetail d " +
+            "ON d.product_id=p.id " +
+            "JOIN dbo.ProductPresentation pp " +
+            "ON pp.product_id=p.id AND pp.is_active=1 " +
+            "WHERE p.record_status='Active' AND p.name LIKE ? " +
+            "ORDER BY p.name,pp.name",
+            (r, n) -> new MedicationDetail(
+                r.getLong("id"),
+                r.getString("name"),
+                r.getString("active_ingredient"),
+                r.getString("concentration"),
+                r.getString("presentation")
+            ),
+            "%" + text + "%"
+        );
+    }
+}
+```
+
+### **10.4. CommercialProfessionalAdapter.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.commercial;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.ProfessionalLookupPort;
+
+@Repository
+public class CommercialProfessionalAdapter implements ProfessionalLookupPort {
+
+    private final JdbcTemplate jdbc;
+
+    public CommercialProfessionalAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public boolean canAttend(long id) {
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.[User] u " +
+            "JOIN dbo.Role r ON r.id=u.role_id " +
+            "WHERE u.id=? AND u.record_status='Active' " +
+            "AND UPPER(r.name) IN " +
+            "('VETERINARIO','VETERINARIAN','ESPECIALISTA','SPECIALIST')",
+            Integer.class, id
+        );
+
+        return count != null && count > 0;
+    }
+
+    public boolean hasSpecialty(long id, String specialty) {
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM dbo.ClinicalProfessionalSpecialty " +
+            "WHERE professional_id=? AND specialty=?",
+            Integer.class, id, specialty
+        );
+
+        return count != null && count > 0;
+    }
+}
+```
+
+## **11. Integración con Notification**
+
+El diagrama Clinical V0.6 incluye una dependencia hacia NotificationUseCase. No debe implementarse un segundo sistema de notificaciones dentro de Clinical.
+
+Para hacer explícito ese contrato, los tres archivos siguientes pertenecen al módulo Notification.
+
+### **11.1. NotificationRequest.java**
+
+Ruta:
+
+`modules/notification/service/dto/request/NotificationRequest.java`
+
+```
+package com.donkan.sisvetclinic.modules.notification.service.dto.request;
+
+public record NotificationRequest(
+    long recipientId,
+    String subject,
+    String message,
+    String channel,
+    String idempotencyKey
+) {}
+```
+
+### **11.2. NotificationResult.java**
+
+Ruta:
+
+`modules/notification/service/dto/response/NotificationResult.java`
+
+```
+package com.donkan.sisvetclinic.modules.notification.service.dto.response;
+
+public record NotificationResult(
+    long notificationId,
+    boolean success,
+    String message
+) {}
+```
+
+### **11.3. NotificationUseCase.java**
+
+Ruta:
+
+`modules/notification/service/port/in/NotificationUseCase.java`
+
+```
+package com.donkan.sisvetclinic.modules.notification.service.port.in;
+
+import com.donkan.sisvetclinic.modules.notification.service.dto.request.NotificationRequest;
+import com.donkan.sisvetclinic.modules.notification.service.dto.response.NotificationResult;
+
+public interface NotificationUseCase {
+
+    NotificationResult sendNotification(NotificationRequest request);
+}
+```
+
+Estos son contratos de integración. Si el módulo Notification ya dispone de estas clases, debe existir una única definición de cada una, ajustando el adaptador a las firmas reales. Para ejecutar envíos será necesaria una implementación concreta de NotificationUseCase.
+
+### **11.4. NotificationUseCaseAdapter.java**
+
+Ruta:
+
+`clinical/infrastructure/output/NotificationUseCaseAdapter.java`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output;
+
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.stereotype.Component;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.NotificationDispatchPort;
+import com.donkan.sisvetclinic.modules.notification.service.port.in.NotificationUseCase;
+import com.donkan.sisvetclinic.modules.notification.service.dto.request.NotificationRequest;
+
+@Component
+public class NotificationUseCaseAdapter implements NotificationDispatchPort {
+
+    private final ObjectProvider<NotificationUseCase> notifications;
+
+    public NotificationUseCaseAdapter(
+        ObjectProvider<NotificationUseCase> notifications
+    ) {
+        this.notifications = notifications;
+    }
+
+    public boolean send(
+        long recipientId,
+        String key,
+        String subject,
+        String message
+    ) {
+        NotificationUseCase useCase = notifications.getIfAvailable();
+
+        if (useCase == null) {
+            return false;
+        }
+
+        var result = useCase.sendNotification(
+            new NotificationRequest(
+                recipientId, subject, message, "INTERNAL", key
+            )
+        );
+
+        return result != null && result.success();
+    }
+}
+```
+
+La clave idempotencyKey permite que Notification identifique una solicitud repetida. Es responsabilidad de ese módulo utilizarla realmente para impedir entregas duplicadas; la presencia del campo por sí sola no garantiza idempotencia.
+
+Si Notification todavía no está implementado, el adaptador devolverá false y Clinical conservará las solicitudes pendientes. No informará falsamente que los avisos fueron entregados.
+
+## **12. Controladores REST**
+
+Ruta:
+
+`clinical/infrastructure/input/rest/`
+
+Los controladores implementan los adaptadores de entrada del diagrama. Su responsabilidad es recibir solicitudes HTTP y delegarlas a los casos de uso. No contienen consultas SQL.
+
+### **12.1. PatientController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.util.List;
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.PatientUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/patients")
+public class PatientController {
+
+    private final PatientUseCase patients;
+
+    public PatientController(PatientUseCase patients) {
+        this.patients = patients;
+    }
+
+    @PostMapping
+    public Pet registerPet(@RequestBody PetRequest request) {
+        return patients.registerPet(request);
+    }
+
+    @GetMapping("/{id}")
+    public Pet findPet(@PathVariable long id) {
+        return patients.findPet(id);
+    }
+
+    @GetMapping
+    public List<Pet> search(
+        @RequestParam(defaultValue = "") String search
+    ) {
+        return patients.searchPets(search);
+    }
+
+    @GetMapping("/{id}/history")
+    public MedicalHistory history(@PathVariable long id) {
+        return patients.getMedicalHistory(id);
+    }
+
+    @GetMapping("/{id}/consultations")
+    public List<MedicalConsultation> consultations(
+        @PathVariable long id
+    ) {
+        return patients.getConsultations(id);
+    }
+}
+```
+
+### **12.2. AttentionController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.util.List;
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.ClinicalAttention;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.AttentionUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/attentions")
+public class AttentionController {
+
+    private final AttentionUseCase attentions;
+
+    public AttentionController(AttentionUseCase attentions) {
+        this.attentions = attentions;
+    }
+
+    @PostMapping("/arrivals")
+    public ClinicalAttention arrival(@RequestBody ArrivalRequest request) {
+        return attentions.registerArrival(request);
+    }
+
+    @PostMapping("/urgencies")
+    public void urgency(@RequestBody UrgencyRequest request) {
+        attentions.registerUrgency(request);
+    }
+
+    @PutMapping("/{id}/priority")
+    public void priority(
+        @PathVariable long id,
+        @RequestBody PriorityRequest request
+    ) {
+        attentions.assignPriority(id, request.priority());
+    }
+
+    @GetMapping("/waiting")
+    public List<ClinicalAttention> waiting() {
+        return attentions.getWaitingPatients();
+    }
+
+    @PutMapping("/{id}/start")
+    public void start(@PathVariable long id) {
+        attentions.startAttention(id);
+    }
+
+    @PutMapping("/{id}/advance")
+    public void advance(@PathVariable long id) {
+        attentions.advanceAttention(id);
+    }
+
+    @PutMapping("/{id}/pickup")
+    public void pickup(@PathVariable long id) {
+        attentions.registerPickup(id);
+    }
+}
+```
+
+### **12.3. ConsultationController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.math.BigDecimal;
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.ConsultationUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/consultations")
+public class ConsultationController {
+
+    private final ConsultationUseCase consultations;
+
+    public ConsultationController(ConsultationUseCase consultations) {
+        this.consultations = consultations;
+    }
+
+    @PostMapping
+    public MedicalConsultation register(
+        @RequestBody ConsultationRequest request
+    ) {
+        return consultations.registerConsultation(request);
+    }
+
+    @PostMapping("/diagnoses")
+    public Diagnosis diagnose(@RequestBody DiagnosisRequest request) {
+        return consultations.registerDiagnosis(request);
+    }
+
+    @PutMapping("/{id}/complete")
+    public void complete(@PathVariable long id) {
+        consultations.completeConsultation(id);
+    }
+
+    @GetMapping("/weight-warning")
+    public String weight(
+        @RequestParam long petId,
+        @RequestParam BigDecimal weight
+    ) {
+        return consultations.checkWeight(petId, weight);
+    }
+}
+```
+
+### **12.4. TreatmentController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.util.List;
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.TreatmentUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/treatments")
+public class TreatmentController {
+
+    private final TreatmentUseCase treatments;
+
+    public TreatmentController(TreatmentUseCase treatments) {
+        this.treatments = treatments;
+    }
+
+    @PostMapping
+    public Treatment treatment(@RequestBody TreatmentRequest request) {
+        return treatments.registerTreatment(request);
+    }
+
+    @PostMapping("/procedures")
+    public ClinicalProcedure procedure(
+        @RequestBody ProcedureRequest request
+    ) {
+        return treatments.registerProcedure(request);
+    }
+
+    @PostMapping("/vaccinations")
+    public Vaccination vaccination(
+        @RequestBody VaccinationRequest request
+    ) {
+        return treatments.registerVaccination(request);
+    }
+
+    @GetMapping("/medications")
+    public List<MedicationDetail> medicines(
+        @RequestParam(defaultValue = "") String search
+    ) {
+        return treatments.getMedicationOptions(search);
+    }
+
+    @PostMapping("/referrals")
+    public Referral referral(@RequestBody ReferralRequest request) {
+        return treatments.registerReferral(request);
+    }
+}
+```
+
+### **12.5. AppointmentController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.*;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.*;
+
+@RestController
+@RequestMapping("/api/clinical/appointments")
+public class AppointmentController {
+
+    private final AppointmentUseCase appointments;
+    private final FollowUpUseCase followUps;
+
+    public AppointmentController(
+        AppointmentUseCase appointments,
+        FollowUpUseCase followUps
+    ) {
+        this.appointments = appointments;
+        this.followUps = followUps;
+    }
+
+    @PostMapping("/availability")
+    public List<Appointment> availability(
+        @RequestBody AvailabilityFilter filter
+    ) {
+        return appointments.getAvailability(filter);
+    }
+
+    @PostMapping
+    public Appointment schedule(@RequestBody AppointmentRequest request) {
+        return appointments.scheduleAppointment(request);
+    }
+
+    @PostMapping("/follow-up")
+    public Appointment followUpAppointment(
+        @RequestBody AppointmentRequest request
+    ) {
+        return appointments.scheduleFollowUp(request);
+    }
+
+    @PostMapping("/specialist")
+    public Appointment specialist(
+        @RequestBody AppointmentRequest request
+    ) {
+        return appointments.scheduleSpecialist(request);
+    }
+
+    @PutMapping("/{id}/reschedule")
+    public void reschedule(
+        @PathVariable long id,
+        @RequestBody Map<String, LocalDateTime> body
+    ) {
+        appointments.rescheduleAppointment(id, body.get("date"));
+    }
+
+    @PutMapping("/{id}/cancel")
+    public void cancel(@PathVariable long id) {
+        appointments.cancelAppointment(id);
+    }
+
+    @PostMapping("/pending-follow-ups")
+    public FollowUp scheduleFollowUp(
+        @RequestBody FollowUpRequest request
+    ) {
+        return followUps.scheduleFollowUp(request);
+    }
+
+    @GetMapping("/pending-follow-ups")
+    public List<FollowUp> pending() {
+        return followUps.getPendingFollowUps();
+    }
+
+    @PutMapping("/pending-follow-ups/{id}/complete")
+    public void complete(@PathVariable long id) {
+        followUps.completeFollowUp(id);
+    }
+}
+```
+
+### **12.6. ClinicalWeightPolicyController.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.WeightRangeRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.WeightPolicyUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/weight-policies")
+public class ClinicalWeightPolicyController {
+
+    private final WeightPolicyUseCase policies;
+
+    public ClinicalWeightPolicyController(
+        WeightPolicyUseCase policies
+    ) {
+        this.policies = policies;
+    }
+
+    @PutMapping
+    public void configure(@RequestBody WeightRangeRequest request) {
+        policies.configure(request);
+    }
+}
+```
+
+### **12.7. ClinicalErrorHandler.java**
+
+Este manejador convierte las excepciones comunes del módulo en respuestas HTTP comprensibles. Las restricciones de base de datos no se exponen al usuario como mensajes SQL internos.
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import java.util.Map;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.web.bind.annotation.*;
+
+@RestControllerAdvice(
+    basePackages = "com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest"
+)
+public class ClinicalErrorHandler {
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> invalid(
+        IllegalArgumentException exception
+    ) {
+        return ResponseEntity.badRequest().body(
+            Map.of("error", exception.getMessage())
+        );
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, String>> conflict(
+        IllegalStateException exception
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(
+            Map.of("error", exception.getMessage())
+        );
+    }
+
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<Map<String, String>> forbidden(
+        SecurityException exception
+    ) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(
+            Map.of("error", exception.getMessage())
+        );
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, String>> integrity(
+        DataIntegrityViolationException exception
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(
+            Map.of(
+                "error",
+                "Operación en conflicto con restricciones de datos"
+            )
+        );
+    }
+}
+```
+
+## **13. Tareas programadas**
+
+Ruta: `clinical/infrastructure/input/scheduler/`
+
+### **13.1. ClinicalSchedulingConfig.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.scheduler;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@Configuration
+@EnableScheduling
+public class ClinicalSchedulingConfig {}
+```
+
+### **13.2. FollowUpScheduler.java**
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.scheduler;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.FollowUpUseCase;
+
+@Component
+public class FollowUpScheduler {
+
+    private final FollowUpUseCase followUps;
+
+    public FollowUpScheduler(FollowUpUseCase followUps) {
+        this.followUps = followUps;
+    }
+
+    @Scheduled(
+        cron = "${sisvet.clinical.followup-cron:0 0 * * * *}"
+    )
+    public void reviewPendingFollowUps() {
+        followUps.reviewPendingFollowUps();
+    }
+}
+```
+
+La expresión de cron predeterminada ejecuta una revisión cada hora. Es configurable desde application.properties.
+
+En un despliegue de una sola instancia, esto proporciona la revisión periódica solicitada. Para ejecutar varias instancias simultáneamente haría falta añadir coordinación distribuida o reclamación transaccional de pendientes; una clave de idempotencia en Notification ayuda, pero no sustituye por sí sola ese control.
+
+## **14. Modelo físico: SQL Server**
+
+Ruta propuesta del script:
+
+`src/main/resources/db/clinical.sql`
+
+El documento SAD V2.0 indica que el modelo clínico todavía está pendiente de implementación física. Por ello, este script crea las tablas clínicas y las tablas auxiliares necesarias para los adaptadores anteriores.
+
+Debe ejecutarse en la misma base de datos en la que ya existen las tablas comerciales dbo.Customer, dbo.[User], dbo.Role, dbo.Product, dbo.ProductPresentation y dbo.ClinicalCharge.
+
+No recrea ni modifica esas tablas comerciales.
+
+```
+-- Ejecutar en la base SQL Server de SISVET-CLINIC.
+-- Las tablas comerciales deben existir previamente.
+
+IF OBJECT_ID('dbo.ClinicalPet', 'U') IS NULL
+CREATE TABLE dbo.ClinicalPet (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    owner_id BIGINT NOT NULL REFERENCES dbo.Customer(id),
+    name NVARCHAR(100) NOT NULL,
+    species NVARCHAR(60) NOT NULL,
+    breed NVARCHAR(60) NULL,
+    sex VARCHAR(20) NULL,
+    birth_date DATE NULL,
+    estimated_age_months INT NULL
+        CHECK (estimated_age_months >= 0)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalAttention', 'U') IS NULL
+CREATE TABLE dbo.ClinicalAttention (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id BIGINT NOT NULL REFERENCES dbo.ClinicalPet(id),
+    type VARCHAR(30) NOT NULL DEFAULT 'MEDICAL',
+    priority INT NULL CHECK (priority BETWEEN 1 AND 5),
+    urgency_description NVARCHAR(500) NULL,
+    priority_assigned_by INT NULL REFERENCES dbo.[User](id),
+    state VARCHAR(30) NOT NULL DEFAULT 'EN_ESPERA'
+        CHECK (
+            state IN (
+                'EN_ESPERA',
+                'ATENDIENDOSE',
+                'EN_BANO',
+                'EN_PELUQUERIA',
+                'LISTO_RECOJO',
+                'ATENDIDO'
+            )
+        ),
+    arrived_at DATETIME2 NULL,
+    requires_grooming BIT NOT NULL DEFAULT 0,
+    clinical_closed BIT NOT NULL DEFAULT 0,
+    consultation_id BIGINT NULL,
+    created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+);
+GO
+
+IF OBJECT_ID('dbo.MedicalConsultation', 'U') IS NULL
+CREATE TABLE dbo.MedicalConsultation (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    attention_id BIGINT NOT NULL UNIQUE
+        REFERENCES dbo.ClinicalAttention(id),
+    pet_id BIGINT NOT NULL REFERENCES dbo.ClinicalPet(id),
+    veterinarian_id INT NOT NULL REFERENCES dbo.[User](id),
+    reason NVARCHAR(300) NOT NULL,
+    weight DECIMAL(10,3) NOT NULL CHECK (weight > 0),
+    symptoms NVARCHAR(MAX) NULL,
+    observations NVARCHAR(MAX) NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN'
+        CHECK (status IN ('OPEN', 'COMPLETED')),
+    created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    last_modified_at DATETIME2 NULL,
+    last_modified_by INT NULL REFERENCES dbo.[User](id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalDiagnosis', 'U') IS NULL
+CREATE TABLE dbo.ClinicalDiagnosis (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    consultation_id BIGINT NOT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    description NVARCHAR(1000) NOT NULL,
+    indications NVARCHAR(2000) NOT NULL,
+    author_id INT NOT NULL REFERENCES dbo.[User](id),
+    created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    CONSTRAINT CK_ClinicalDiagnosis_Text
+        CHECK (
+            LEN(LTRIM(RTRIM(description))) > 0
+            AND LEN(LTRIM(RTRIM(indications))) > 0
+        )
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalTreatment', 'U') IS NULL
+CREATE TABLE dbo.ClinicalTreatment (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    consultation_id BIGINT NOT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    description NVARCHAR(1000) NOT NULL,
+    instructions NVARCHAR(2000) NOT NULL,
+    product_id BIGINT NULL REFERENCES dbo.Product(id),
+    prescribed_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    author_id INT NOT NULL REFERENCES dbo.[User](id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalProcedure', 'U') IS NULL
+CREATE TABLE dbo.ClinicalProcedure (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    consultation_id BIGINT NOT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    name NVARCHAR(200) NOT NULL,
+    observations NVARCHAR(2000) NULL,
+    performed_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    author_id INT NOT NULL REFERENCES dbo.[User](id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalVaccination', 'U') IS NULL
+CREATE TABLE dbo.ClinicalVaccination (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id BIGINT NOT NULL REFERENCES dbo.ClinicalPet(id),
+    consultation_id BIGINT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    vaccine NVARCHAR(200) NOT NULL,
+    dose NVARCHAR(100) NOT NULL,
+    applied_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    next_dose_date DATE NULL,
+    veterinarian_id INT NOT NULL REFERENCES dbo.[User](id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalReferral', 'U') IS NULL
+CREATE TABLE dbo.ClinicalReferral (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    consultation_id BIGINT NOT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    reason NVARCHAR(1000) NOT NULL,
+    destination NVARCHAR(250) NULL,
+    created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    author_id INT NOT NULL REFERENCES dbo.[User](id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalProfessionalSpecialty', 'U') IS NULL
+CREATE TABLE dbo.ClinicalProfessionalSpecialty (
+    professional_id INT NOT NULL REFERENCES dbo.[User](id),
+    specialty NVARCHAR(150) NOT NULL,
+    CONSTRAINT PK_ClinicalProfessionalSpecialty
+        PRIMARY KEY (professional_id, specialty)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalAppointment', 'U') IS NULL
+CREATE TABLE dbo.ClinicalAppointment (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id BIGINT NOT NULL REFERENCES dbo.ClinicalPet(id),
+    professional_id INT NOT NULL REFERENCES dbo.[User](id),
+    reason NVARCHAR(500) NOT NULL,
+    starts_at DATETIME2 NOT NULL,
+    ends_at DATETIME2 NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'CONFIRMED'
+        CHECK (status IN ('CONFIRMED', 'CANCELLED')),
+    specialty NVARCHAR(150) NULL,
+    consultation_id BIGINT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    created_at DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+    reminder_sent BIT NOT NULL DEFAULT 0,
+    CONSTRAINT CK_ClinicalAppointment_Period
+        CHECK (ends_at > starts_at)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalFollowUp', 'U') IS NULL
+CREATE TABLE dbo.ClinicalFollowUp (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    pet_id BIGINT NOT NULL REFERENCES dbo.ClinicalPet(id),
+    consultation_id BIGINT NULL
+        REFERENCES dbo.MedicalConsultation(id),
+    reason NVARCHAR(500) NOT NULL,
+    due_at DATETIME2 NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING', 'REVIEWED', 'COMPLETED')),
+    reviewed_at DATETIME2 NULL,
+    appointment_id BIGINT NULL
+        REFERENCES dbo.ClinicalAppointment(id)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalWeightPolicy', 'U') IS NULL
+CREATE TABLE dbo.ClinicalWeightPolicy (
+    species NVARCHAR(60) PRIMARY KEY,
+    min_kg DECIMAL(10,3) NOT NULL CHECK (min_kg > 0),
+    max_kg DECIMAL(10,3) NOT NULL CHECK (max_kg > 0),
+    CONSTRAINT CK_ClinicalWeightPolicy_Range
+        CHECK (max_kg >= min_kg)
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalMedicationDetail', 'U') IS NULL
+CREATE TABLE dbo.ClinicalMedicationDetail (
+    product_id BIGINT PRIMARY KEY REFERENCES dbo.Product(id),
+    active_ingredient NVARCHAR(150) NOT NULL,
+    concentration NVARCHAR(100) NOT NULL
+);
+GO
+
+IF OBJECT_ID('dbo.ClinicalPriorityAudit', 'U') IS NULL
+CREATE TABLE dbo.ClinicalPriorityAudit (
+    id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    attention_id BIGINT NOT NULL
+        REFERENCES dbo.ClinicalAttention(id),
+    veterinarian_id INT NOT NULL REFERENCES dbo.[User](id),
+    priority INT NOT NULL CHECK (priority BETWEEN 1 AND 5),
+    changed_at DATETIME2 NOT NULL DEFAULT SYSDATETIME()
+);
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'UX_ClinicalAttention_OpenPet'
+      AND object_id = OBJECT_ID('dbo.ClinicalAttention')
+)
+CREATE UNIQUE INDEX UX_ClinicalAttention_OpenPet
+ON dbo.ClinicalAttention(pet_id)
+WHERE state <> 'ATENDIDO';
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_ClinicalAppointment_ProfessionalStart'
+      AND object_id = OBJECT_ID('dbo.ClinicalAppointment')
+)
+CREATE INDEX IX_ClinicalAppointment_ProfessionalStart
+ON dbo.ClinicalAppointment(professional_id, starts_at)
+INCLUDE (ends_at, status);
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_ClinicalFollowUp_StatusDue'
+      AND object_id = OBJECT_ID('dbo.ClinicalFollowUp')
+)
+CREATE INDEX IX_ClinicalFollowUp_StatusDue
+ON dbo.ClinicalFollowUp(status, due_at);
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_ClinicalPet_Owner'
+      AND object_id = OBJECT_ID('dbo.ClinicalPet')
+)
+CREATE INDEX IX_ClinicalPet_Owner
+ON dbo.ClinicalPet(owner_id, name);
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_Consultation_Pet'
+      AND object_id = OBJECT_ID('dbo.MedicalConsultation')
+)
+CREATE INDEX IX_Consultation_Pet
+ON dbo.MedicalConsultation(pet_id, created_at DESC);
+GO
+```
+
+El índice UX_ClinicalAttention_OpenPet impide registrar dos atenciones abiertas simultáneamente para la misma mascota. Esto complementa la validación del servicio y protege la integridad incluso ante solicitudes concurrentes.
+
+El script debe aplicarse con SQL Server Management Studio o sqlcmd, ya que GO es un separador de lotes reconocido por esas herramientas y no una instrucción T-SQL ejecutable directamente mediante JdbcTemplate.
+
+## **15. Completar la actualización de pacientes**
+
+Hay un requisito del SRS que merece un caso de uso propio: RF-04, actualizar datos del propietario o mascota conservando su identificador. La modificación de propietarios corresponde al módulo Commercial; la modificación de mascotas debe resolverse en Clinical.
+
+Para no alterar las firmas de PatientUseCase y PatientRepositoryPort ya definidas, lo incorporo mediante un puerto de entrada y uno de salida adicionales. Así mantenemos la separación hexagonal.
+
+### **15.1. PatientUpdateUseCase.java**
+
+Ruta: `clinical/service/port/in/`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.in;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+
+public interface PatientUpdateUseCase {
+    Pet updatePet(long id, PetRequest request);
+}
+```
+
+### **15.2. PatientUpdatePort.java**
+
+Ruta: `clinical/service/port/out/`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.port.out;
+
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+
+public interface PatientUpdatePort {
+    Pet update(long id, Pet pet);
+}
+```
+
+### **15.3. PatientUpdateService.java**
+
+Ruta: `clinical/service/implementation/`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.service.implementation;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.PatientUpdateUseCase;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.*;
+
+@Service
+public class PatientUpdateService implements PatientUpdateUseCase {
+
+    private final PatientRepositoryPort patients;
+    private final PatientUpdatePort updates;
+    private final OwnerLookupPort owners;
+    private final ActorPort actors;
+
+    public PatientUpdateService(
+        PatientRepositoryPort patients,
+        PatientUpdatePort updates,
+        OwnerLookupPort owners,
+        ActorPort actors
+    ) {
+        this.patients = patients;
+        this.updates = updates;
+        this.owners = owners;
+        this.actors = actors;
+    }
+
+    @Transactional
+    public Pet updatePet(long id, PetRequest request) {
+        ClinicalAccess.require(
+            actors, "ADMINISTRADOR", "ADMIN",
+            "RECEPCIONISTA", "RECEPTIONIST"
+        );
+
+        if (patients.findById(id) == null) {
+            throw new IllegalArgumentException("Mascota inexistente");
+        }
+
+        if (request == null || request.ownerId() <= 0 ||
+            request.name() == null || request.name().isBlank() ||
+            request.species() == null || request.species().isBlank()) {
+            throw new IllegalArgumentException(
+                "Propietario, nombre y especie son obligatorios"
+            );
+        }
+
+        if (request.birthDate() == null &&
+            (request.estimatedAgeMonths() == null ||
+             request.estimatedAgeMonths() < 0)) {
+            throw new IllegalArgumentException(
+                "Indique fecha de nacimiento o edad aproximada"
+            );
+        }
+
+        if (!owners.existsOwner(request.ownerId())) {
+            throw new IllegalArgumentException(
+                "Propietario inexistente"
+            );
+        }
+
+        Pet changed = new Pet(
+            id, request.ownerId(),
+            request.name().trim(),
+            request.species().trim(),
+            request.breed(),
+            request.sex(),
+            request.birthDate(),
+            request.estimatedAgeMonths()
+        );
+
+        return updates.update(id, changed);
+    }
+}
+```
+
+### **15.4. SqlPatientUpdateAdapter.java**
+
+Ruta: `clinical/infrastructure/output/persistence/`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.output.persistence;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.jdbc.core.JdbcTemplate;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.port.out.PatientUpdatePort;
+
+@Repository
+public class SqlPatientUpdateAdapter implements PatientUpdatePort {
+
+    private final JdbcTemplate jdbc;
+
+    public SqlPatientUpdateAdapter(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    public Pet update(long id, Pet pet) {
+        int affected = jdbc.update(
+            "UPDATE dbo.ClinicalPet SET " +
+            "owner_id=?,name=?,species=?,breed=?,sex=?," +
+            "birth_date=?,estimated_age_months=? WHERE id=?",
+            pet.ownerId(),
+            pet.name(),
+            pet.species(),
+            pet.breed(),
+            pet.sex(),
+            pet.birthDate(),
+            pet.estimatedAgeMonths(),
+            id
+        );
+
+        if (affected != 1) {
+            throw new IllegalStateException(
+                "No se pudo modificar la mascota"
+            );
+        }
+
+        return jdbc.query(
+            "SELECT * FROM dbo.ClinicalPet WHERE id=?",
+            SqlClinicalMappers.PET, id
+        ).stream().findFirst().orElseThrow(
+            () -> new IllegalStateException(
+                "Registro actualizado no encontrado"
+            )
+        );
+    }
+}
+```
+
+### **15.5. PatientUpdateController.java**
+
+Ruta: `clinical/infrastructure/input/rest/`
+
+```
+package com.donkan.sisvetclinic.modules.clinical.infrastructure.input.rest;
+
+import org.springframework.web.bind.annotation.*;
+import com.donkan.sisvetclinic.modules.clinical.domain.Pet;
+import com.donkan.sisvetclinic.modules.clinical.service.dto.request.PetRequest;
+import com.donkan.sisvetclinic.modules.clinical.service.port.in.PatientUpdateUseCase;
+
+@RestController
+@RequestMapping("/api/clinical/patients")
+public class PatientUpdateController {
+
+    private final PatientUpdateUseCase patients;
+
+    public PatientUpdateController(
+        PatientUpdateUseCase patients
+    ) {
+        this.patients = patients;
+    }
+
+    @PutMapping("/{id}")
+    public Pet updatePet(
+        @PathVariable long id,
+        @RequestBody PetRequest request
+    ) {
+        return patients.updatePet(id, request);
+    }
+}
+```
+
+El endpoint PUT /api/clinical/patients/ actualiza la ficha sin cambiar la identidad del paciente ni eliminar sus consultas anteriores.
+
+Los cinco archivos adicionales se verificaron compilando junto con los anteriores; no presentan incompatibilidades de firmas Java.
+
+## **16. Integridad referencial con el subsistema comercial**
+
+El SAD V2.0 identifica como pendiente que ClinicalCharge y Sale tienen referencias de consulta que originalmente no podían enlazarse mediante claves foráneas, porque la tabla clínica todavía no existía.
+
+Una vez creada MedicalConsultation, podemos incorporar esas restricciones, pero únicamente después de comprobar que los datos comerciales existentes no contienen referencias inválidas.
+
+Ejecuta el siguiente script por separado, después del anterior.
+
+```
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys
+    WHERE name = 'FK_ClinicalAttention_Consultation'
+)
+BEGIN
+    ALTER TABLE dbo.ClinicalAttention WITH CHECK
+    ADD CONSTRAINT FK_ClinicalAttention_Consultation
+    FOREIGN KEY (consultation_id)
+    REFERENCES dbo.MedicalConsultation(id);
+END;
+GO
+
+IF OBJECT_ID('dbo.ClinicalCharge', 'U') IS NOT NULL
+AND NOT EXISTS (
+    SELECT 1
+    FROM dbo.ClinicalCharge c
+    LEFT JOIN dbo.MedicalConsultation m
+        ON m.id = c.consultation_id
+    WHERE c.consultation_id IS NOT NULL
+      AND m.id IS NULL
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys
+    WHERE name = 'FK_ClinicalCharge_MedicalConsultation'
+)
+BEGIN
+    ALTER TABLE dbo.ClinicalCharge WITH CHECK
+    ADD CONSTRAINT FK_ClinicalCharge_MedicalConsultation
+    FOREIGN KEY (consultation_id)
+    REFERENCES dbo.MedicalConsultation(id);
+END;
+GO
+
+IF OBJECT_ID('dbo.Sale', 'U') IS NOT NULL
+AND COL_LENGTH('dbo.Sale', 'consultation_id') IS NOT NULL
+AND NOT EXISTS (
+    SELECT 1
+    FROM dbo.Sale s
+    LEFT JOIN dbo.MedicalConsultation m
+        ON m.id = s.consultation_id
+    WHERE s.consultation_id IS NOT NULL
+      AND m.id IS NULL
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM sys.foreign_keys
+    WHERE name = 'FK_Sale_MedicalConsultation'
+)
+BEGIN
+    ALTER TABLE dbo.Sale WITH CHECK
+    ADD CONSTRAINT FK_Sale_MedicalConsultation
+    FOREIGN KEY (consultation_id)
+    REFERENCES dbo.MedicalConsultation(id);
+END;
+GO
+```
+
+Estas migraciones presuponen que los tipos de las columnas comerciales coinciden con los de MedicalConsultation.id. Si existen identificadores clínicos antiguos sin correspondencia, el script no agrega la clave foránea correspondiente: primero debe resolverse esa inconsistencia, sin borrar registros automáticamente.
+
+## **17. Dependencias y configuración de Spring Boot**
+
+### **17.1. Dependencias de Maven**
+
+No debemos reemplazar el pom.xml del proyecto principal, porque también contiene las dependencias de Commercial y Finance. En la sección dependencies del pom.xml existente deben figurar, como mínimo, las siguientes:
+
+```
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-jdbc</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+
+<dependency>
+    <groupId>com.microsoft.sqlserver</groupId>
+    <artifactId>mssql-jdbc</artifactId>
+    <scope>runtime</scope>
+</dependency>
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+Estas declaraciones presuponen que el pom.xml principal utiliza la gestión de versiones de dependencias de Spring Boot. No las dupliques si ya están incluidas.
+
+### **17.2. application.properties**
+
+Agrega o adapta estas propiedades al archivo existente.
+
+```
+spring.datasource.url=${SISVET_DB_URL}
+spring.datasource.username=${SISVET_DB_USER}
+spring.datasource.password=${SISVET_DB_PASSWORD}
+spring.datasource.driver-class-name=com.microsoft.sqlserver.jdbc.SQLServerDriver
+
+sisvet.clinical.followup-cron=0 0 * * * *
+```
+
+La variable SISVET_DB_URL debe contener la cadena JDBC correspondiente a la instancia SQL Server utilizada por el proyecto.
+
+No incluyo usuarios ni contraseñas reales en el código.
+
+Para mantener consistencia entre LocalDateTime.now(), SQL Server y el scheduler, configura explícitamente la zona horaria operativa del servidor. Si toda la instalación utiliza el horario de Perú, puede iniciarse Java con:
+
+```
+java -Duser.timezone=America/Lima -jar sisvetclinic.jar
+```
+
+El nombre del JAR es ilustrativo; debe sustituirse por el generado por Maven.
+
+### **17.3. Configuración de seguridad**
+
+El módulo requiere que Spring Security autentique a los usuarios y que la identidad de Authentication.getName() corresponda a dbo.[User].username.
+
+SqlActorAdapter utiliza esa identidad para verificar que el usuario sigue activo y recuperar su rol.
+
+No conviene añadir una segunda SecurityConfig sin revisar la existente. En particular, la configuración principal debe proteger `/api/clinical/**`, gestionar correctamente el login y aplicar la política de sesión o token correspondiente. Los métodos de ClinicalAccess proporcionan una segunda verificación de autorización dentro de la aplicación.
+
+No se debe configurar `/api/clinical/**` con permitAll.
+
+## **18. Roles clínicos y datos maestros**
+
+La base comercial original contempla perfiles administrativos y de ventas. Para que los controles de autorización de Clinical funcionen, deben existir los roles clínicos utilizados por los servicios.
+
+El siguiente script agrega únicamente los roles ausentes:
+
+```
+IF NOT EXISTS (
+    SELECT 1 FROM dbo.Role WHERE name = 'RECEPCIONISTA'
+)
+BEGIN
+    INSERT INTO dbo.Role (name)
+    VALUES ('RECEPCIONISTA');
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM dbo.Role WHERE name = 'VETERINARIO'
+)
+BEGIN
+    INSERT INTO dbo.Role (name)
+    VALUES ('VETERINARIO');
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM dbo.Role WHERE name = 'ESPECIALISTA'
+)
+BEGIN
+    INSERT INTO dbo.Role (name)
+    VALUES ('ESPECIALISTA');
+END;
+GO
+```
+
+Los usuarios profesionales deberán tener asignado el rol correspondiente. No conviene inventar cuentas veterinarias ni asignar permisos clínicos a usuarios comerciales existentes sin autorización.
+
+También deben cargarse las especialidades de los profesionales en ClinicalProfessionalSpecialty y los identificadores farmacológicos de los productos en ClinicalMedicationDetail. Estas tablas se crearon en el script, pero sus datos no pueden generarse a partir de la documentación porque dependen del personal y del catálogo real de la veterinaria.
+
+## **19. Flujo operativo implementado**
+
+Con los componentes anteriores, la secuencia prevista es la siguiente:
+
+1. Recepción registra o busca al propietario mediante Commercial y registra la mascota con PatientUseCase.
+2. Registra la llegada mediante AttentionUseCase. El paciente queda EN_ESPERA.
+3. Cuando existe una urgencia, se registra su descripción y el veterinario determina la prioridad.
+4. El veterinario inicia la atención. AttentionService selecciona el workflow adecuado y cambia el estado a ATENDIENDOSE.
+5. Consulta, diagnóstico, tratamientos, procedimientos, vacunaciones y derivaciones se registran mediante sus respectivos casos de uso.
+6. El veterinario finaliza la consulta cuando existe diagnóstico e indicaciones. El servicio marca el cierre clínico.
+7. AttentionService hace avanzar la atención hacia EN_BANO y EN_PELUQUERIA si corresponde, o directamente hacia LISTO_RECOJO.
+8. Recepción registra el retiro, verificando el cierre clínico y los conceptos de cobro que correspondan.
+9. AppointmentService administra citas, reprogramaciones y cancelaciones. FollowUpService conserva los seguimientos y entrega solicitudes al módulo Notification.
+
+Este es el flujo de las clases implementadas, no una afirmación de que los endpoints ya hayan sido ejecutados contra la base real de producción.
+
+## **20. Corrección final de autorización clínica**
+
+En la revisión de permisos detecté una discrepancia respecto al SRS: un Administrador del sistema no debe quedar automáticamente autorizado para diagnosticar, prescribir o iniciar actuaciones clínicas solo por tener privilegios administrativos.
+
+La autorización de estas operaciones corresponde a VETERINARIO o ESPECIALISTA. Por tanto, estas son las sustituciones definitivas que deben aplicarse en los archivos anteriores.
+
+### **AttentionService.java**
+
+Dentro de los métodos startAttention() y advanceAttention(), sustituye la llamada de autorización inicial por:
+
+```
+ClinicalAccess.require(
+    actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+);
+```
+
+No cambies las autorizaciones de registerArrival(), registerUrgency(), assignPriority(), getWaitingPatients() ni registerPickup(). Cada una representa una operación distinta.
+
+### **ConsultationService.java**
+
+En registerConsultation(), registerDiagnosis(), completeConsultation() y checkWeight(), utiliza únicamente los siguientes roles:
+
+```
+Actor actor = ClinicalAccess.require(
+    actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+);
+```
+
+Para checkWeight(), que no utiliza la variable actor, la llamada es:
+
+```
+ClinicalAccess.require(
+    actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+);
+```
+
+### **TreatmentService.java**
+
+Sustituye el método vet() completo por:
+
+```
+private Actor vet() {
+    return ClinicalAccess.require(
+        actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+    );
+}
+```
+
+### **WeightPolicyService.java**
+
+En configure(), sustituye la autorización por:
+
+```
+ClinicalAccess.require(
+    actors, "VETERINARIO", "VETERINARIAN", "ESPECIALISTA"
+);
+```
+
+Estas correcciones fueron aplicadas al código de comprobación y se volvió a compilar el conjunto con JDK 21.
+
+## **21. Verificación final de compatibilidad**
+
+El conjunto resultante contiene 98 archivos Java: 95 correspondientes a Clinical y 3 contratos mínimos de integración con Notification.
+
+Realicé las siguientes verificaciones:
+
+| Verificación                                        | Resultado                                            |
+| --------------------------------------------------- | ---------------------------------------------------- |
+| Referencias entre entidades, DTO y puertos          | Correctas en compilación                             |
+| Implementación de interfaces por los servicios      | Correcta                                             |
+| Implementación de puertos por los adaptadores       | Correcta                                             |
+| Dependencias entre domain, service e infrastructure | Respetan la dirección hexagonal                      |
+| Compilación conjunta con JDK 21                     | Correcta, utilizando sustitutos de las API de Spring |
+| Pruebas de transición de estados                    | 8 comprobaciones superadas                           |
+| Ejecución de Maven con dependencias reales          | No verificada                                        |
+| Ejecución del DDL en SQL Server                     | No verificada                                        |
+| Integración con Commercial Spring Boot existente    | Pendiente de comprobar contra su código actual       |
+| Entrega real de notificaciones                      | Depende de NotificationService                       |
+
+La comprobación de estados confirmó, entre otras cosas, que no puede comenzar una atención sin llegada, que no se permite avanzar hacia el cierre sin completar la parte clínica y que se respeta la secuencia de baño, peluquería y recogida.
+
+### **Consideraciones antes de integrar**
+
+Hay tres condiciones que no sería correcto ocultar:
+
+Primero, los adaptadores comerciales suponen exactamente las tablas y columnas documentadas en el SAD V2.0. Hay que contrastarlas con el SQL Server realmente desplegado antes de ejecutar las migraciones.
+
+Segundo, la integración con Notification está completa en cuanto a puertos y adaptador de Clinical, pero el envío real y la garantía de idempotencia corresponden a la implementación del módulo Notification. El código actual no debe considerarse una prueba de que funcionan SMTP, SMS o notificaciones internas.
+
+Tercero, la programación de citas utiliza controles transaccionales de solapamiento, pero la ejecución simultánea de varios schedulers todavía requiere coordinación adicional si SISVET-CLINIC llega a desplegarse en varias instancias.
+
+## **Resultado**
+
+La estructura de Clinical queda desarrollada desde el dominio hasta los controladores REST, pasando por los casos de uso, los patrones State y Template Method, los adaptadores SQL, las integraciones comerciales, los seguimientos y el modelo físico propuesto.
+
+No he sustituido la aplicación Spring Boot existente ni trasladado las reglas del negocio a los controladores.
+
+El siguiente criterio de aceptación debe ser ejecutar esta implementación contra una copia de la base SQL Server real y el proyecto Spring Boot vigente, verificando los procesos de registro de mascotas, atención, diagnóstico, tratamiento, citas y seguimiento. Esa prueba de integración es la que permitirá confirmar la compatibilidad operativa que una compilación aislada no puede demostrar.

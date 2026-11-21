@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SISVET-CLINIC | Login</title>
+    <!-- Icono de la pestaña (Favicon) -->
+    <link rel="icon" type="image/svg+xml" href="images/paw-placeholder.svg">
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/login.css">
+</head>
+
+<body class="login-page">
+
+    <div class="login-shell">
+
+        <!-- Panel informativo -->
+        <section class="login-intro">
+            <p class="login-eyebrow">SISVET-CLINIC</p>
+            <h1>Veterinaria para todos los animales</h1>
+
+            <ul class="login-benefits">
+                <li>Nicho vuelve</li>
+                <li>Skibidis en oferta</li>
+                <li>Hipergamia en descuento</li>
+            </ul>
+
+            <!-- Imagen principal del login -->
+            <img class="login-main-image" src="/images/test-image.jpg" alt="Imagen de la clinica">
+
+            <p class="login-footer">Diseño por Mario todos los derechos reservados</p>
+        </section>
+
+        <!-- Formulario de acceso -->
+        <section class="login-panel">
+            <a class="login-brand" href="/index.html" aria-label="SISVET-CLINIC inicio">
+                <img src="/images/paw-placeholder.svg" alt="">
+                <span>SISVET-CLINIC</span>
+            </a>
+
+            <div class="login-form-wrap">
+                <h2>Iniciar sesión</h2>
+                <p class="login-subtitle">Ingresa tus datos para continuar</p>
+
+                <form id="loginForm">
+                    <label for="username">Usuario</label>
+                    <div class="input-group">
+                        <img src="/images/user-icon.svg" alt="Icono de usuario">
+                        <input type="text" id="username" placeholder="Ingresa tu usuario" required autocomplete="username">
+                    </div>
+
+                    <label for="password">Contraseña</label>
+                    <div class="input-group">
+                        <img src="/images/lock-icon.svg" alt="Icono de candado">
+                        <input type="password" id="password" placeholder="Ingresa tu contraseña" required autocomplete="current-password">
+                    </div>
+                    
+                    <button type="submit" id="loginButton">Iniciar sesión</button>
+                </form>
+
+                <p id="message" role="alert"></p>
+            </div>
+        </section>
+    </div>
+
+    <script>
+
+        const loginForm = document.getElementById("loginForm");
+        const loginButton = document.getElementById("loginButton");
+        const message = document.getElementById("message");
+
+        let csrfToken = null;
+
+        async function loadCsrfToken() {
+
+            const response = await fetch("/api/auth/csrf", {
+                credentials: "same-origin"
+            });
+
+            if (!response.ok) {
+                throw new Error("No se pudo obtener el token de seguridad.");
+            }
+
+            csrfToken = await response.json();
+        }
+
+        function redirectToPanel() {
+            window.location.replace("/panel.html");
+        }
+
+        loginForm.addEventListener("submit", async function(event) {
+
+            event.preventDefault();
+
+            const username = document.getElementById("username").value.trim();
+            const password = document.getElementById("password").value;
+
+            message.textContent = "";
+            loginButton.disabled = true;
+            loginButton.textContent = "Iniciando sesión...";
+
+            try {
+
+                if (!csrfToken) {
+                    await loadCsrfToken();
+                }
+
+                const response = await fetch("/api/auth/login", {
+
+                    method: "POST",
+                    credentials: "same-origin",
+
+                    headers: {
+                        "Content-Type": "application/json",
+                        [csrfToken.headerName]: csrfToken.token
+                    },
+
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+
+                if (!response.ok) {
+
+                    if (response.status === 401) {
+                        message.textContent = "Usuario o contraseña incorrectos.";
+                    } else if (response.status === 403) {
+                        csrfToken = null;
+                        message.textContent = "La sesión de seguridad expiró. Intenta nuevamente.";
+                    } else {
+                        message.textContent = "No se pudo iniciar sesión.";
+                    }
+
+                    return;
+                }
+
+                redirectToPanel();
+
+            } catch (error) {
+
+                message.textContent = "Error de conexión con el servidor.";
+                console.error(error);
+
+            } finally {
+
+                loginButton.disabled = false;
+                loginButton.textContent = "Iniciar sesión";
+            }
+        });
+
+        async function checkSession() {
+
+            try {
+
+                await loadCsrfToken();
+
+                const response = await fetch("/api/auth/me", {
+                    credentials: "same-origin"
+                });
+
+                if (response.ok) {
+                    redirectToPanel();
+                }
+
+            } catch (error) {
+
+                console.error("No se pudo comprobar la sesión:", error);
+            }
+        }
+
+        checkSession();
+
+    </script>
+
+</body>
+</html>

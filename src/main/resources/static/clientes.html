@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clientes | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Gestión de clientes</h1>
+            <p>Registro y consulta de compradores.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Registrar cliente</h3>
+
+            <form id="customerForm">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Tipo de documento</label>
+                        <select id="documentType">
+                            <option value="DNI">DNI</option>
+                            <option value="RUC">RUC</option>
+                            <option value="CE">Carné de extranjería</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Número de documento</label>
+                        <input id="documentNumber" maxlength="20" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Nombre completo o razón social</label>
+                        <input id="fullName" maxlength="100" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Teléfono</label>
+                        <input id="phone" maxlength="20">
+                    </div>
+
+                    <div class="field">
+                        <label>Correo electrónico</label>
+                        <input id="email" type="email">
+                    </div>
+
+                    <div class="field">
+                        <label>Dirección</label>
+                        <input id="address">
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Registrar cliente</button>
+                </div>
+
+            </form>
+
+            <p id="formMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Clientes registrados</h3>
+
+            <div class="toolbar">
+                <div class="field">
+                    <label>Buscar por documento o nombre</label>
+                    <input id="search">
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table id="customersTable"></table>
+            </div>
+
+            <p id="listMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let customers = [];
+
+    function renderCustomers() {
+
+        const search = document.getElementById("search").value.toLowerCase();
+
+        const filtered = customers.filter(customer =>
+            customer.documentNumber.toLowerCase().includes(search)
+            || customer.fullName.toLowerCase().includes(search)
+        );
+
+        Sisvet.renderTable("customersTable", filtered, [
+            { label: "Documento", value: c => c.documentNumber },
+            { label: "Tipo", value: c => c.documentType },
+            { label: "Nombre", value: c => c.fullName },
+            { label: "Teléfono", value: c => c.phone },
+            { label: "Correo", value: c => c.email }
+        ]);
+    }
+
+    async function loadCustomers() {
+
+        try {
+            customers = await Sisvet.api("/api/customers");
+            renderCustomers();
+        } catch (error) {
+            Sisvet.showError("listMessage", error);
+        }
+    }
+
+    document.getElementById("customerForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const request = {
+            documentType: document.getElementById("documentType").value,
+            documentNumber: document.getElementById("documentNumber").value.trim(),
+            fullName: document.getElementById("fullName").value.trim(),
+            phone: document.getElementById("phone").value.trim(),
+            email: document.getElementById("email").value.trim(),
+            address: document.getElementById("address").value.trim()
+        };
+
+        try {
+
+            await Sisvet.api("/api/customers", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            event.target.reset();
+            await loadCustomers();
+
+            Sisvet.message("formMessage", "Cliente registrado.");
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    document.getElementById("search").addEventListener("input", renderCustomers);
+
+    async function start() {
+        if (!await Sisvet.init("Clientes")) return;
+        await loadCustomers();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Panel | SISVET-CLINIC</title>
+
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+</head>
+
+<body>
+
+<div class="layout">
+
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header dashboard-page-heading">
+            <h1>Panel principal</h1>
+        </header>
+
+        <section class="card dashboard-card">
+            <div class="dashboard-account">
+                <h3>Sesión actual</h3>
+                <p><strong>Usuario:</strong> <span id="dashboardUsername"></span></p>
+                <p><strong>Rol:</strong> <span id="dashboardRole"></span></p>
+                <p><strong>Nombre:</strong> <span id="dashboardFullName"></span></p>
+            </div>
+
+            <img id="dashboardProfileImage" class="dashboard-profile-image"
+                 src="/images/user-icon.svg" alt="Foto de perfil">
+
+            <nav id="dashboardLinks" class="quick-links" aria-label="Accesos a secciones"></nav>
+        </section>
+
+    </main>
+
+</div>
+
+<script src="/js/sisvet.js"></script>
+
+<script>
+
+    async function start() {
+
+        try {
+
+            const initialized = await Sisvet.init("Sisvet Clinic");
+
+            if (!initialized) {
+                return;
+            }
+
+            const user = Sisvet.getUser();
+            document.getElementById("dashboardUsername").textContent = user.username;
+            document.getElementById("dashboardRole").textContent = user.role;
+            document.getElementById("dashboardFullName").textContent = user.fullName;
+
+            const profileImage = document.getElementById("dashboardProfileImage");
+            profileImage.addEventListener("error", () => {
+                profileImage.src = "/images/user-icon.svg";
+            }, { once: true });
+            profileImage.src = "/images/perfil.png";
+
+            const dashboardLinks = document.getElementById("dashboardLinks");
+
+            for (const sidebarLink of document.querySelectorAll("#navigation a[href]")) {
+                const link = document.createElement("a");
+                const icon = sidebarLink.querySelector("img");
+                link.href = sidebarLink.href;
+                link.className = "dashboard-module-link";
+                if (icon) {
+                    link.appendChild(icon.cloneNode(true));
+                }
+                link.appendChild(document.createTextNode(sidebarLink.textContent.trim()));
+                dashboardLinks.appendChild(link);
+            }
+
+        } catch (error) {
+
+            console.error("Error al inicializar el panel:", error);
+        }
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

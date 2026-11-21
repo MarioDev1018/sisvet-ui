@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Atención clínica | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Atención clínica integral</h1>
+            <p>Consulta médica, control de peso, diagnósticos, prescripciones, procedimientos, vacunación y cierre desde un único flujo.</p>
+        </header>
+
+        <div id="careRoleBanner" class="alert alert-warn" hidden></div>
+
+        <section class="card">
+            <h3>Seleccionar atención activa</h3>
+            <div class="toolbar">
+                <div class="field" style="flex:1">
+                    <label>Paciente con atención en curso o en espera</label>
+                    <select id="careAttentionSelect"></select>
+                </div>
+                <button type="button" id="refreshCareBtn" class="secondary">Actualizar</button>
+                <a id="carePatientDossierLink" class="button-link outline" href="/pacientes.html" hidden>Ver ficha completa</a>
+            </div>
+
+            <div id="careContextBox" class="dossier-meta" hidden>
+                <div class="meta-box">
+                    <small>Paciente</small>
+                    <strong id="carePetInfo">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Propietario</small>
+                    <strong id="careOwnerInfo">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Tipo / Estado actual</small>
+                    <strong id="careStateInfo">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Último peso registrado</small>
+                    <strong id="careWeightInfo">-</strong>
+                </div>
+            </div>
+
+            <div id="careStartBar" class="actions" hidden>
+                <button type="button" id="startSelectedAttentionBtn">Iniciar atención ahora</button>
+            </div>
+            <p id="careSelectMessage" class="message"></p>
+        </section>
+
+        <div id="medicalCarePanel" hidden>
+            <section id="openConsultationCard" class="card" hidden>
+                <h3>Abrir consulta médica</h3>
+                <form id="consultationOpenForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label>Motivo de consulta</label>
+                            <input id="consultReason" name="reason" maxlength="300" required placeholder="Ej. Decaimiento y fiebre">
+                        </div>
+                        <div class="field">
+                            <label>Peso actual (kg)</label>
+                            <div class="customer-row">
+                                <input id="consultWeight" name="weight" type="number" step="0.01" min="0.01" required>
+                                <button type="button" id="evaluateConsultWeightBtn" class="outline">Evaluar rango</button>
+                            </div>
+                        </div>
+                        <div class="field full">
+                            <label>Síntomas observados</label>
+                            <textarea id="consultSymptoms" name="symptoms" placeholder="Signos clínicos reportados"></textarea>
+                        </div>
+                        <div class="field full">
+                            <label>Observaciones iniciales</label>
+                            <textarea id="consultObservations" name="observations"></textarea>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button id="openConsultationBtn" type="submit">Registrar e iniciar consulta</button>
+                    </div>
+                </form>
+                <div id="consultWeightAlert" class="alert" hidden></div>
+                <p id="consultOpenMessage" class="message"></p>
+            </section>
+
+            <section id="activeConsultationCard" class="card" hidden>
+                <div class="dossier-header">
+                    <div>
+                        <h3 id="activeConsultHeading" style="margin:0 0 6px">Consulta clínica</h3>
+                        <div id="activeConsultMeta" class="muted"></div>
+                    </div>
+                    <div class="table-actions">
+                        <button type="button" id="completeConsultationBtn">Finalizar consulta</button>
+                        <button type="button" id="advanceAttentionBtn" class="secondary">Avanzar estado de atención</button>
+                        <a id="goToClinicalBillingLink" class="button-link outline" href="/cobros-clinicos.html">Cobros clínicos</a>
+                    </div>
+                </div>
+                <p id="consultLifecycleMessage" class="message"></p>
+
+                <div id="careTabs" class="tabs">
+                    <button type="button" class="tab-btn active" data-tab="diagnosis">Diagnóstico</button>
+                    <button type="button" class="tab-btn" data-tab="treatment">Tratamientos y medicamentos</button>
+                    <button type="button" class="tab-btn" data-tab="procedure">Procedimientos, derivaciones y cargos</button>
+                    <button type="button" class="tab-btn" data-tab="vaccination">Vacunación</button>
+                    <button type="button" class="tab-btn" data-tab="followup">Seguimiento y cita</button>
+                </div>
+
+                <div id="careTabDiagnosis">
+                    <form id="diagnosisForm">
+                        <div class="form-grid">
+                            <div class="field full">
+                                <label>Diagnóstico clínico</label>
+                                <input name="description" maxlength="1000" required placeholder="Diagnóstico presuntivo o definitivo">
+                            </div>
+                            <div class="field full">
+                                <label>Indicaciones clínicas y cuidados</label>
+                                <textarea name="indications" maxlength="2000" required></textarea>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button type="submit">Guardar diagnóstico</button>
+                        </div>
+                    </form>
+                    <p id="diagnosisMessage" class="message"></p>
+                    <div class="table-wrap"><table id="consultationDiagnosesTable"></table></div>
+                </div>
+
+                <div id="careTabTreatment" hidden>
+                    <form id="treatmentForm">
+                        <input id="selectedProductId" name="productId" type="hidden">
+                        <div class="form-grid">
+                            <div class="field full">
+                                <label>Descripción del tratamiento</label>
+                                <input name="description" maxlength="1000" required placeholder="Ej. Antibiótico oral por 7 días">
+                            </div>
+                            <div class="field full">
+                                <label>Indicaciones de administración</label>
+                                <textarea name="instructions" maxlength="2000" required></textarea>
+                            </div>
+                            <div class="field full">
+                                <label>Medicamento del catálogo (opcional, seleccionar abajo)</label>
+                                <div class="customer-row">
+                                    <input id="selectedMedicationDisplay" readonly placeholder="Ningún medicamento seleccionado — elige uno en la tabla inferior">
+                                    <button type="button" id="clearMedicationBtn" class="small secondary">Quitar</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button type="submit">Prescribir tratamiento</button>
+                        </div>
+                    </form>
+                    <p id="treatmentMessage" class="message"></p>
+
+                    <div class="inline-card">
+                        <h4 style="margin-top:0">Catálogo de medicamentos disponibles</h4>
+                        <div class="toolbar">
+                            <div class="field" style="flex:1">
+                                <label>Filtrar por nombre o principio activo</label>
+                                <input id="medicationFilterInput" placeholder="Ej. Amoxicilina, Meloxicam">
+                            </div>
+                            <button type="button" id="searchMedicationsBtn" class="secondary">Buscar</button>
+                        </div>
+                        <div class="table-wrap"><table id="medicationsPickerTable"></table></div>
+                    </div>
+
+                    <h4>Tratamientos prescritos en esta consulta</h4>
+                    <div class="table-wrap"><table id="consultationTreatmentsTable"></table></div>
+                </div>
+
+                <div id="careTabProcedure" hidden>
+                    <div class="split-grid">
+                        <div>
+                            <h4>Registrar procedimiento clínico</h4>
+                            <form id="procedureForm">
+                                <div class="form-grid">
+                                    <div class="field full">
+                                        <label>Procedimiento</label>
+                                        <input name="name" maxlength="200" required placeholder="Ej. Curación de herida, Limpieza dental">
+                                    </div>
+                                    <div class="field full">
+                                        <label>Observaciones</label>
+                                        <textarea name="observations" maxlength="2000"></textarea>
+                                    </div>
+                                </div>
+                                <div class="actions">
+                                    <button type="submit">Registrar procedimiento</button>
+                                </div>
+                            </form>
+                            <p id="procedureMessage" class="message"></p>
+                        </div>
+
+                        <div>
+                            <h4>Registrar derivación a especialista</h4>
+                            <form id="referralForm">
+                                <div class="form-grid">
+                                    <div class="field full">
+                                        <label>Motivo de derivación</label>
+                                        <input name="reason" maxlength="1000" required>
+                                    </div>
+                                    <div class="field full">
+                                        <label>Especialidad o destino</label>
+                                        <input name="destination" maxlength="250" placeholder="Ej. Cardiología, Ecografía">
+                                    </div>
+                                </div>
+                                <div class="actions">
+                                    <button type="submit">Registrar derivación</button>
+                                </div>
+                            </form>
+                            <p id="referralMessage" class="message"></p>
+
+                            <hr style="border:0;border-top:1px solid var(--border);margin:18px 0">
+                            <h4>Agregar concepto adicional de cobro (opcional)</h4>
+                            <form id="extraChargeForm">
+                                <div class="form-grid">
+                                    <div class="field">
+                                        <label>Concepto</label>
+                                        <input name="description" maxlength="255" required placeholder="Ej. Radiografía torácica">
+                                    </div>
+                                    <div class="field">
+                                        <label>Importe (S/)</label>
+                                        <input name="amount" type="number" step="0.01" min="0.01" required>
+                                    </div>
+                                </div>
+                                <div class="actions">
+                                    <button type="submit" class="outline">Agregar cargo pendiente</button>
+                                </div>
+                            </form>
+                            <p id="extraChargeMessage" class="message"></p>
+                        </div>
+                    </div>
+
+                    <h4>Procedimientos realizados en esta consulta</h4>
+                    <div class="table-wrap"><table id="consultationProceduresTable"></table></div>
+                    <h4>Derivaciones registradas</h4>
+                    <div class="table-wrap"><table id="consultationReferralsTable"></table></div>
+                </div>
+
+                <div id="careTabVaccination" hidden>
+                    <form id="inConsultVaccinationForm">
+                        <div class="form-grid">
+                            <div class="field full">
+                                <label>Vacuna / Insumo del inventario (categoría Vacunas / Medicamentos)</label>
+                                <div class="picker-stack">
+                                    <div class="picker-toolbar">
+                                        <input id="inConsultVaccineFilter" type="search" placeholder="Buscar vacuna en inventario...">
+                                        <button type="button" id="refreshInConsultVaccinesBtn" class="small secondary">Actualizar stock</button>
+                                    </div>
+                                    <select id="inConsultVaccineProductId" name="productId"></select>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <label>Nombre de vacuna registrada</label>
+                                <input id="inConsultVaccineName" name="vaccine" maxlength="200" required placeholder="Ej. Séxtuple canina">
+                            </div>
+                            <div class="field">
+                                <label>Dosis aplicada (detalle clínico)</label>
+                                <input id="inConsultVaccineDose" name="dose" maxlength="100" required placeholder="Ej. 1 ml · Refuerzo">
+                            </div>
+                            <div id="inConsultVaccineQtyField" class="field" hidden>
+                                <label id="inConsultVaccineQtyLabel">Cantidad a descontar de inventario (ml / unid.)</label>
+                                <input id="inConsultVaccineQty" name="quantityUsed" type="number" min="1" value="1">
+                            </div>
+                            <div class="field">
+                                <label>Cargo adicional por aplicación / servicio (S/)</label>
+                                <input id="inConsultVaccineFee" name="applicationFee" type="number" step="0.01" min="0" value="15.00">
+                            </div>
+                            <div class="field">
+                                <label>Próxima dosis (opcional)</label>
+                                <input name="nextDoseDate" type="date">
+                            </div>
+                        </div>
+                        <p id="inConsultVaccineEstimate" class="muted"></p>
+                        <div class="actions">
+                            <button type="submit">Registrar vacunación y descontar stock</button>
+                        </div>
+                    </form>
+                    <p id="inConsultVaxMessage" class="message"></p>
+                    <div class="table-wrap"><table id="consultationVaccinationsTable"></table></div>
+                </div>
+
+                <div id="careTabFollowup" hidden>
+                    <form id="inConsultFollowUpForm">
+                        <div class="form-grid">
+                            <div class="field">
+                                <label>Fecha y hora de seguimiento</label>
+                                <input name="dueAt" type="datetime-local" required>
+                            </div>
+                            <div class="field">
+                                <label>Motivo / Control a realizar</label>
+                                <input name="reason" maxlength="500" required placeholder="Ej. Llamada de control o retiro de puntos">
+                            </div>
+                        </div>
+                        <div class="actions">
+                            <button type="submit">Programar seguimiento postconsulta</button>
+                            <a id="inConsultAgendaLink" class="button-link outline" href="/citas.html">Crear cita en agenda</a>
+                        </div>
+                    </form>
+                    <p id="inConsultFollowUpMessage" class="message"></p>
+                </div>
+            </section>
+        </div>
+
+        <section id="vaccinationCarePanel" class="card" hidden>
+            <div class="dossier-header">
+                <div>
+                    <h3 style="margin:0 0 6px">Vacunación independiente</h3>
+                    <p class="muted" style="margin:0">Descuento automático de ml/dosis desde inventario y generación de cobro para caja.</p>
+                </div>
+                <div class="table-actions">
+                    <a id="standaloneBillingLink" class="button-link outline" href="/cobros-clinicos.html">Ir a Cobros clínicos</a>
+                    <button type="button" id="advanceVaccinationBtn" class="secondary">Finalizar y pasar a listo para recojo</button>
+                </div>
+            </div>
+
+            <form id="standaloneVaccinationForm">
+                <div class="form-grid">
+                    <div class="field full">
+                        <label>Vacuna / Insumo del inventario (categoría Vacunas / Medicamentos)</label>
+                        <div class="picker-stack">
+                            <div class="picker-toolbar">
+                                <input id="standaloneVaccineFilter" type="search" placeholder="Buscar vacuna en inventario...">
+                                <button type="button" id="refreshStandaloneVaccinesBtn" class="small secondary">Actualizar stock</button>
+                            </div>
+                            <select id="standaloneVaccineProductId" name="productId"></select>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label>Nombre de vacuna aplicada</label>
+                        <input id="standaloneVaccineName" name="vaccine" maxlength="200" required placeholder="Ej. Antirrábica">
+                    </div>
+                    <div class="field">
+                        <label>Dosis / Lote</label>
+                        <input id="standaloneVaccineDose" name="dose" maxlength="100" required placeholder="Ej. 1 ml">
+                    </div>
+                    <div id="standaloneVaccineQtyField" class="field" hidden>
+                        <label id="standaloneVaccineQtyLabel">Cantidad a descontar de inventario (ml / unid.)</label>
+                        <input id="standaloneVaccineQty" name="quantityUsed" type="number" min="1" value="1">
+                    </div>
+                    <div class="field">
+                        <label>Cargo adicional por aplicación / servicio (S/)</label>
+                        <input id="standaloneVaccineFee" name="applicationFee" type="number" step="0.01" min="0" value="15.00">
+                    </div>
+                    <div class="field">
+                        <label>Fecha de próxima dosis (opcional)</label>
+                        <input id="standaloneNextDose" name="nextDoseDate" type="date">
+                    </div>
+                    <div class="field">
+                        <label>Recordatorio por correo / Pendientes</label>
+                        <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                            <input id="autoCreateVaxFollowUp" type="checkbox" checked style="width:auto">
+                            <span>Crear seguimiento automático si indico próxima dosis</span>
+                        </label>
+                    </div>
+                </div>
+                <p id="standaloneVaccineEstimate" class="muted"></p>
+                <div class="actions">
+                    <button type="submit">Registrar vacuna</button>
+                </div>
+            </form>
+            <p id="standaloneVaxMessage" class="message"></p>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("clinicalCare");</script>
+</body>
+</html>

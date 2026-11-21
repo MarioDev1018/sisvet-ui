@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pagos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+        <header class="page-header">
+            <h1>Procesamiento de pagos</h1>
+            <p>Generación de órdenes PayPal / Yape, códigos QR y autorización/verificación sobre ventas registradas.</p>
+        </header>
+
+        <section class="card">
+            <h3>Solicitar pago</h3>
+            <p class="muted">El importe se obtiene automáticamente desde la venta seleccionada.</p>
+
+            <form id="paymentForm">
+                <div class="form-grid">
+                    <div class="field">
+                        <label>Seleccionar venta reciente</label>
+                        <select id="saleSelector"></select>
+                    </div>
+                    <div class="field">
+                        <label>O ingresar ID de venta</label>
+                        <input id="saleId" type="number" min="1" required>
+                    </div>
+                    <div class="field">
+                        <label>Pasarela / Proveedor</label>
+                        <select id="providerSelect">
+                            <option value="PAYPAL">PayPal</option>
+                            <option value="YAPE">Yape</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="createPaymentButton" type="submit">Generar orden de pago</button>
+                </div>
+            </form>
+
+            <p id="paymentMessage" class="message"></p>
+        </section>
+
+        <section class="card">
+            <h3>Orden generada</h3>
+            <p id="paymentSummary" class="summary">Todavía no hay una orden seleccionada.</p>
+            <p id="paymentCurrency"></p>
+
+            <div id="yapeCredentialsContainer" class="inline-card" hidden>
+                <h4 style="margin-top:0">Autorización de pago Yape</h4>
+                <p class="muted" style="margin-top:0">En simulación local: celular <strong>111111111</strong> y OTP <strong>123456</strong>.</p>
+                <form id="yapeCredentialsForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label>Celular Yape (9 dígitos)</label>
+                            <input id="yapePhone" maxlength="9" pattern="[0-9]{9}" placeholder="111111111" required>
+                        </div>
+                        <div class="field">
+                            <label>Código de aprobación OTP (6 dígitos)</label>
+                            <input id="yapeOtp" maxlength="6" pattern="[0-9]{6}" placeholder="123456" required>
+                        </div>
+                        <div class="field full">
+                            <label>Correo electrónico del pagador</label>
+                            <input id="yapeEmail" type="email" placeholder="cliente@correo.com" required>
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button id="yapeConfirmButton" type="submit">Confirmar pago Yape</button>
+                    </div>
+                </form>
+                <p id="yapeCredentialsMessage" class="message"></p>
+            </div>
+
+            <div id="qrContainer" hidden>
+                <h4>Código QR de aprobación</h4>
+                <img id="paymentQr" alt="Código QR del pago" width="280" height="280">
+            </div>
+
+            <div class="actions">
+                <a id="approvalLink" class="button-link" href="#" target="_blank" rel="noopener noreferrer" hidden>
+                    Abrir aprobación en PayPal
+                </a>
+            </div>
+
+            <p id="paypalLocalHint" class="muted" hidden>En modo local de PayPal, abre el enlace de aprobación, aprueba la orden simulada y luego pulsa «Verificar pago».</p>
+        </section>
+
+        <section class="card">
+            <h3>Verificar pago</h3>
+
+            <form id="verifyForm">
+                <div class="form-grid">
+                    <div class="field">
+                        <label>ID de venta</label>
+                        <input id="verifySaleId" type="number" min="1" required>
+                    </div>
+
+                    <div class="field">
+                        <label>ID de pago</label>
+                        <input id="paymentId" type="text" required>
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="verifyButton" type="submit">Verificar pago</button>
+                    <button id="refreshButton" type="button" class="secondary">Consultar estado guardado</button>
+                </div>
+            </form>
+
+            <p id="verificationMessage" class="message"></p>
+        </section>
+
+        <section class="card">
+            <h3>Estados de pago</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr><th>Estado</th><th>Significado</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>PENDING</td><td>Orden creada; en Yape espera teléfono/OTP y correo del pagador.</td></tr>
+                        <tr><td>AWAITING_APPROVAL</td><td>Esperando aprobación del cliente en PayPal.</td></tr>
+                        <tr><td>VERIFYING</td><td>Se está comprobando el resultado.</td></tr>
+                        <tr><td>COMPLETED</td><td>Pago confirmado por la pasarela.</td></tr>
+                        <tr><td>FAILED</td><td>Pago fallido o rechazado.</td></tr>
+                        <tr><td>UNKNOWN</td><td>Resultado indeterminado; requiere verificación.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <p class="muted">Las pruebas locales no representan transferencias de dinero reales.</p>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+(() => {
+    const view = document.querySelector(".layout .content");
+
+    async function loadRecentSales() {
+        try {
+            const [sales, customers] = await Promise.all([
+                Sisvet.api("/api/sales"),
+                Sisvet.api("/api/customers")
+            ]);
+            if (!view.isConnected) return;
+
+            const customerMap = new Map(customers.map(c => [c.id, c.fullName]));
+            const sel = document.getElementById("saleSelector");
+            sel.replaceChildren();
+            sel.add(new Option("Seleccionar venta reciente...", ""));
+            for (const s of sales.slice(0, 50)) {
+                const cName = customerMap.get(s.customerId) || `Cliente #${s.customerId}`;
+                sel.add(new Option(`#${s.id} · ${Sisvet.formatDateTime(s.saleDatetime)} · ${cName} · ${Sisvet.money(s.totalAmount)}`, String(s.id)));
+            }
+        } catch (_) {}
+    }
+
+    function displayPayment(payment) {
+        document.getElementById("verifySaleId").value =
+            payment.operationReference && payment.operationReference.startsWith("SALE-")
+                ? payment.operationReference.substring(5)
+                : document.getElementById("saleId").value;
+
+        document.getElementById("paymentId").value = payment.paymentId;
+
+        document.getElementById("paymentSummary").textContent =
+            `Pago: ${payment.paymentId} | Proveedor: ${payment.provider} | Estado: ${payment.status}`;
+
+        const original = `${payment.originalCurrency} ${Number(payment.originalAmount).toFixed(2)}`;
+        const charged = payment.chargedCurrency
+            ? `${payment.chargedCurrency} ${Number(payment.chargedAmount).toFixed(2)}`
+            : "Pendiente de envío a pasarela";
+
+        document.getElementById("paymentCurrency").textContent =
+            `Importe original: ${original} | Importe procesado: ${charged}`;
+
+        const needsYape = payment.nextAction === "COLLECT_CREDENTIALS" && payment.status !== "COMPLETED";
+        document.getElementById("yapeCredentialsContainer").hidden = !needsYape;
+
+        const isPayPal = String(payment.provider || "").toUpperCase() === "PAYPAL";
+        document.getElementById("paypalLocalHint").hidden = !isPayPal || payment.status === "COMPLETED";
+
+        const qrContainer = document.getElementById("qrContainer");
+        const qr = document.getElementById("paymentQr");
+        const link = document.getElementById("approvalLink");
+
+        if (payment.qrBase64 && payment.status !== "COMPLETED") {
+            qr.src = "data:image/png;base64," + payment.qrBase64;
+            qrContainer.hidden = false;
+        } else {
+            qr.removeAttribute("src");
+            qrContainer.hidden = true;
+        }
+
+        if (payment.approvalUrl && payment.status !== "COMPLETED") {
+            link.href = payment.approvalUrl;
+            link.hidden = false;
+        } else {
+            link.removeAttribute("href");
+            link.hidden = true;
+        }
+    }
+
+    document.getElementById("saleSelector").addEventListener("change", event => {
+        if (!event.target.value) return;
+        document.getElementById("saleId").value = event.target.value;
+        document.getElementById("verifySaleId").value = event.target.value;
+    });
+
+    document.getElementById("paymentForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const saleId = Number(document.getElementById("saleId").value);
+        const provider = document.getElementById("providerSelect").value;
+        const button = document.getElementById("createPaymentButton");
+        button.disabled = true;
+
+        try {
+            const payment = await Sisvet.api(`/api/sales/${saleId}/payments/${encodeURIComponent(provider)}`, {
+                method: "POST"
+            });
+            if (!view.isConnected) return;
+            displayPayment(payment);
+            Sisvet.message("paymentMessage", payment.message || "Orden registrada.");
+        } catch (error) {
+            if (view.isConnected) Sisvet.showError("paymentMessage", error);
+        } finally {
+            if (view.isConnected) button.disabled = false;
+        }
+    });
+
+    document.getElementById("yapeCredentialsForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const saleId = Number(document.getElementById("verifySaleId").value || document.getElementById("saleId").value);
+        const paymentId = document.getElementById("paymentId").value.trim();
+        const btn = document.getElementById("yapeConfirmButton");
+        btn.disabled = true;
+
+        try {
+            const payment = await Sisvet.api(`/api/sales/${saleId}/payments/${encodeURIComponent(paymentId)}/credentials`, {
+                method: "POST",
+                body: JSON.stringify({
+                    phoneNumber: document.getElementById("yapePhone").value.trim(),
+                    otp: document.getElementById("yapeOtp").value.trim(),
+                    payerEmail: document.getElementById("yapeEmail").value.trim()
+                })
+            });
+            if (!view.isConnected) return;
+            displayPayment(payment);
+            Sisvet.message("yapeCredentialsMessage", `Estado: ${payment.status} | ${payment.message || ""}`, payment.status === "FAILED");
+        } catch (error) {
+            if (view.isConnected) Sisvet.showError("yapeCredentialsMessage", error);
+        } finally {
+            if (view.isConnected) btn.disabled = false;
+        }
+    });
+
+    document.getElementById("verifyForm").addEventListener("submit", async event => {
+        event.preventDefault();
+        const saleId = Number(document.getElementById("verifySaleId").value);
+        const paymentId = document.getElementById("paymentId").value.trim();
+        const button = document.getElementById("verifyButton");
+        button.disabled = true;
+
+        try {
+            const payment = await Sisvet.api(`/api/sales/${saleId}/payments/${encodeURIComponent(paymentId)}/verify`, {
+                method: "POST"
+            });
+            if (!view.isConnected) return;
+            displayPayment(payment);
+            Sisvet.message("verificationMessage", `Estado: ${payment.status} | ${payment.message || ""}`);
+        } catch (error) {
+            if (view.isConnected) Sisvet.showError("verificationMessage", error);
+        } finally {
+            if (view.isConnected) button.disabled = false;
+        }
+    });
+
+    document.getElementById("refreshButton").addEventListener("click", async () => {
+        const saleId = Number(document.getElementById("verifySaleId").value);
+        const paymentId = document.getElementById("paymentId").value.trim();
+
+        if (saleId <= 0 || !paymentId) {
+            Sisvet.message("verificationMessage", "Introduce una venta y un ID de pago.", true);
+            return;
+        }
+
+        try {
+            const payment = await Sisvet.api(`/api/sales/${saleId}/payments/${encodeURIComponent(paymentId)}`);
+            if (!view.isConnected) return;
+            displayPayment(payment);
+            Sisvet.message("verificationMessage", `Estado guardado: ${payment.status}`);
+        } catch (error) {
+            if (view.isConnected) Sisvet.showError("verificationMessage", error);
+        }
+    });
+
+    async function start() {
+        if (!await Sisvet.init("Pagos") || !view.isConnected) return;
+        await loadRecentSales();
+
+        const params = new URLSearchParams(window.location.search);
+        const saleId = Number(params.get("saleId"));
+        if (saleId > 0) {
+            document.getElementById("saleId").value = String(saleId);
+            document.getElementById("verifySaleId").value = String(saleId);
+            document.getElementById("saleSelector").value = String(saleId);
+        }
+    }
+
+    start();
+})();
+</script>
+
+</body>
+</html>

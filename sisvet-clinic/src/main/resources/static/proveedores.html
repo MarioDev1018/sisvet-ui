@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proveedores | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Gestión de proveedores</h1>
+            <p>Registro de proveedores del almacén veterinario.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Registrar proveedor</h3>
+
+            <form id="supplierForm">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>RUC</label>
+                        <input id="ruc" maxlength="11" pattern="[0-9]{11}" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Razón social</label>
+                        <input id="businessName" maxlength="150" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Teléfono</label>
+                        <input id="phone" maxlength="20">
+                    </div>
+
+                    <div class="field">
+                        <label>Correo electrónico</label>
+                        <input id="email" type="email">
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Registrar proveedor</button>
+                </div>
+
+            </form>
+
+            <p id="formMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Proveedores registrados</h3>
+
+            <div class="toolbar">
+                <div class="field">
+                    <label>Buscar RUC o razón social</label>
+                    <input id="search">
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <table id="suppliersTable"></table>
+            </div>
+
+            <p id="listMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let suppliers = [];
+
+    function renderSuppliers() {
+
+        const search = document.getElementById("search").value.toLowerCase();
+
+        const filtered = suppliers.filter(supplier =>
+            supplier.ruc.includes(search)
+            || supplier.businessName.toLowerCase().includes(search)
+        );
+
+        Sisvet.renderTable("suppliersTable", filtered, [
+            { label: "RUC", value: s => s.ruc },
+            { label: "Razón social", value: s => s.businessName },
+            { label: "Teléfono", value: s => s.phone },
+            { label: "Correo", value: s => s.email }
+        ]);
+    }
+
+    async function loadSuppliers() {
+
+        try {
+            suppliers = await Sisvet.api("/api/suppliers");
+            renderSuppliers();
+        } catch (error) {
+            Sisvet.showError("listMessage", error);
+        }
+    }
+
+    document.getElementById("supplierForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const request = {
+            ruc: document.getElementById("ruc").value.trim(),
+            businessName: document.getElementById("businessName").value.trim(),
+            phone: document.getElementById("phone").value.trim(),
+            email: document.getElementById("email").value.trim()
+        };
+
+        try {
+
+            await Sisvet.api("/api/suppliers", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            event.target.reset();
+            await loadSuppliers();
+
+            Sisvet.message("formMessage", "Proveedor registrado.");
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    document.getElementById("search").addEventListener("input", renderSuppliers);
+
+    async function start() {
+        if (!await Sisvet.init("Proveedores")) return;
+        await loadSuppliers();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

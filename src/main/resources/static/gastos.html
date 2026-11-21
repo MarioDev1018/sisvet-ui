@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gastos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Gestión de gastos</h1>
+            <p>Registro y consulta de egresos administrativos.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Registrar gasto</h3>
+
+            <form id="expenseForm">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Nombre del gasto</label>
+                        <input id="name" maxlength="100" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Categoría</label>
+                        <select id="category">
+                            <option value="UTILITY">Servicios básicos</option>
+                            <option value="EQUIPMENT">Equipamiento</option>
+                            <option value="INFRASTRUCTURE">Infraestructura</option>
+                            <option value="SUPPLIES">Insumos</option>
+                            <option value="MARKETING">Marketing</option>
+                            <option value="SERVICES">Servicios</option>
+                            <option value="SECURITY">Seguridad</option>
+                            <option value="OTHER">Otros</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Importe (S/)</label>
+                        <input id="amount" type="number" min="0.01" step="0.01" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Fecha y hora</label>
+                        <input id="expenseDatetime" type="datetime-local" required>
+                    </div>
+
+                    <div class="field full">
+                        <label>Descripción o motivo</label>
+                        <textarea id="description"></textarea>
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Registrar gasto</button>
+                </div>
+
+            </form>
+
+            <p id="formMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Consulta de gastos</h3>
+
+            <div class="toolbar">
+
+                <div class="field">
+                    <label>Fecha inicial</label>
+                    <input id="startDate" type="date">
+                </div>
+
+                <div class="field">
+                    <label>Fecha final</label>
+                    <input id="endDate" type="date">
+                </div>
+
+                <button id="searchButton">Consultar</button>
+
+            </div>
+
+            <div class="table-wrap">
+                <table id="expensesTable"></table>
+            </div>
+
+            <p id="total" class="summary">Total: S/ 0.00</p>
+            <p id="listMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    document.getElementById("expenseForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const request = {
+            name: document.getElementById("name").value.trim(),
+            category: document.getElementById("category").value,
+            amount: Number(document.getElementById("amount").value),
+            expenseDatetime: document.getElementById("expenseDatetime").value,
+            description: document.getElementById("description").value.trim()
+        };
+
+        try {
+
+            await Sisvet.api("/api/expenses", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            event.target.reset();
+
+            Sisvet.message("formMessage", "Gasto registrado correctamente.");
+
+            await loadExpenses();
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    async function loadExpenses() {
+
+        const startDate = document.getElementById("startDate").value;
+        const endDate = document.getElementById("endDate").value;
+
+        if (!startDate || !endDate) {
+            Sisvet.message("listMessage", "Selecciona un intervalo de fechas.", true);
+            return;
+        }
+
+        const parameters = new URLSearchParams({ startDate, endDate });
+
+        try {
+
+            const expenses = await Sisvet.api("/api/expenses?" + parameters);
+
+            Sisvet.renderTable("expensesTable", expenses, [
+                { label: "ID", value: e => e.id },
+                { label: "Fecha", value: e => e.expenseDatetime },
+                { label: "Nombre", value: e => e.name },
+                { label: "Categoría", value: e => e.category },
+                { label: "Importe", value: e => Sisvet.money(e.amount) },
+                { label: "Automático", value: e => e.automatic ? "Sí" : "No" }
+            ]);
+
+            const total = expenses.reduce(
+                (sum, expense) => sum + Number(expense.amount), 0
+            );
+
+            document.getElementById("total").textContent =
+                "Total: " + Sisvet.money(total);
+
+            Sisvet.message("listMessage", "");
+
+        } catch (error) {
+            Sisvet.showError("listMessage", error);
+        }
+    }
+
+    document.getElementById("searchButton").addEventListener("click", loadExpenses);
+
+    async function start() {
+
+        if (!await Sisvet.init("Gastos")) return;
+
+        const today = new Date();
+
+        const localDate = [
+            today.getFullYear(),
+            String(today.getMonth() + 1).padStart(2, "0"),
+            String(today.getDate()).padStart(2, "0")
+        ].join("-");
+
+        document.getElementById("startDate").value =
+            localDate.slice(0, 8) + "01";
+
+        document.getElementById("endDate").value = localDate;
+
+        const localDatetime = localDate + "T" +
+            String(today.getHours()).padStart(2, "0") + ":" +
+            String(today.getMinutes()).padStart(2, "0");
+
+        document.getElementById("expenseDatetime").value = localDatetime;
+
+        await loadExpenses();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

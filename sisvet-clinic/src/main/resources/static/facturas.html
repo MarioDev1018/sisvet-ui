@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facturación | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Facturación electrónica</h1>
+            <p>Emisión y verificación de comprobantes.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Emitir comprobante</h3>
+
+            <form id="invoiceForm">
+
+                <div class="field">
+                    <label>ID de venta confirmada</label>
+                    <input id="saleId" type="number" min="1" required>
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Solicitar emisión</button>
+                </div>
+
+            </form>
+
+            <p id="invoiceMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Consultar estado del comprobante</h3>
+
+            <form id="statusForm">
+
+                <div class="field">
+                    <label>ID del comprobante</label>
+                    <input id="invoiceId" type="number" min="1" required>
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Consultar estado</button>
+                </div>
+
+            </form>
+
+            <p id="statusMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Estados de emisión</h3>
+
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Estado</th>
+                            <th>Significado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>PENDING</td>
+                            <td>Registrado, pendiente de procesamiento.</td>
+                        </tr>
+                        <tr>
+                            <td>ACCEPTED</td>
+                            <td>Comprobante aceptado.</td>
+                        </tr>
+                        <tr>
+                            <td>REJECTED</td>
+                            <td>Comprobante rechazado.</td>
+                        </tr>
+                        <tr>
+                            <td>PENDING_VERIFICATION</td>
+                            <td>Resultado externo todavía indeterminado.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    document.getElementById("invoiceForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const saleId = Number(document.getElementById("saleId").value);
+
+        try {
+
+            const result = await Sisvet.api("/api/invoices", {
+                method: "POST",
+                body: JSON.stringify({ saleId })
+            });
+
+            Sisvet.message(
+                "invoiceMessage",
+                "Comprobante #" + result.invoiceId +
+                " | Estado: " + result.status +
+                " | " + (result.message || "")
+            );
+
+        } catch (error) {
+            Sisvet.showError("invoiceMessage", error);
+        }
+    });
+
+    document.getElementById("statusForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const invoiceId = Number(document.getElementById("invoiceId").value);
+
+        try {
+
+            const result = await Sisvet.api("/api/invoices/" + invoiceId + "/status");
+
+            const status = typeof result === "string" ? result : result.status;
+
+            Sisvet.message("statusMessage", "Estado actual: " + status);
+
+        } catch (error) {
+            Sisvet.showError("statusMessage", error);
+        }
+    });
+
+    async function start() {
+        await Sisvet.init("Facturación");
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

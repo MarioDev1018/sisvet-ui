@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Productos | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Catálogo de productos</h1>
+            <p>Productos, unidades y presentaciones comerciales.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Registrar producto</h3>
+
+            <form id="productForm">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Código</label>
+                        <input id="code" required maxlength="20">
+                    </div>
+
+                    <div class="field">
+                        <label>Nombre</label>
+                        <input id="name" required maxlength="100">
+                    </div>
+
+                    <div class="field">
+                        <label>Categoría</label>
+                        <select id="categoryId" required></select>
+                    </div>
+
+                    <div class="field">
+                        <label>Unidad base del inventario</label>
+                        <select id="baseUnit">
+                            <option value="UNIT">Unidades</option>
+                            <option value="G">Gramos</option>
+                            <option value="ML">Mililitros</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Presentación inicial</label>
+                        <input id="presentationName" value="Unidad" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Cantidad en unidad base</label>
+                        <input id="presentationQuantity" type="number" min="1" value="1" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Precio de venta por presentación (S/)</label>
+                        <input id="price" type="number" min="0.01" step="0.01" required>
+                    </div>
+
+                    <div class="field">
+                        <label>
+                            <input id="fractionable" type="checkbox" style="width:auto">
+                            Permitir venta fraccionada
+                        </label>
+                    </div>
+
+                </div>
+
+                <p id="unitHelp" class="muted"></p>
+
+                <div class="actions">
+                    <button type="submit">Registrar producto</button>
+                </div>
+
+            </form>
+
+            <p id="formMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Agregar presentación a un producto existente</h3>
+
+            <form id="presentationForm">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Producto</label>
+                        <select id="presentationProductId" required></select>
+                    </div>
+
+                    <div class="field">
+                        <label>Nombre de presentación</label>
+                        <input id="newPresentationName" required placeholder="Ej. Bolsa 2 kg">
+                    </div>
+
+                    <div class="field">
+                        <label>Equivalencia en unidad base</label>
+                        <input id="newPresentationQuantity" type="number" min="1" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Precio por presentación (S/)</label>
+                        <input id="newPresentationPrice" type="number" min="0.01" step="0.01" required>
+                    </div>
+
+                    <div class="field">
+                        <label>
+                            <input id="newPresentationFractionable" type="checkbox" style="width:auto">
+                            Permitir fraccionamiento
+                        </label>
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Agregar presentación</button>
+                </div>
+
+            </form>
+
+            <p id="presentationMessage" class="message"></p>
+
+            <h3>Presentaciones existentes</h3>
+
+            <div class="table-wrap">
+                <table id="presentationsTable"></table>
+            </div>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Productos registrados</h3>
+
+            <div class="field">
+                <label>Buscar producto</label>
+                <input id="search" placeholder="Código o nombre">
+            </div>
+
+            <div class="table-wrap">
+                <table id="productsTable"></table>
+            </div>
+
+            <p id="listMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let products = [];
+    let categories = [];
+
+    function updateUnitHelp() {
+
+        const unit = document.getElementById("baseUnit").value;
+        const name = document.getElementById("presentationName");
+        const quantity = document.getElementById("presentationQuantity");
+        const fractionable = document.getElementById("fractionable");
+
+        if (unit === "UNIT") {
+            document.getElementById("unitHelp").textContent =
+                "Ejemplo: una caja contiene 12 unidades. Equivalencia = 12.";
+            fractionable.checked = false;
+            fractionable.disabled = true;
+            if (name.value === "Bolsa 1 kg" || name.value === "Botella 1 L") name.value = "Unidad";
+        } else if (unit === "G") {
+            document.getElementById("unitHelp").textContent =
+                "Ejemplo: bolsa de 10 kg = 10000 gramos. Para venta a granel, activa fraccionamiento.";
+            fractionable.disabled = false;
+            if (name.value === "Unidad") {
+                name.value = "Bolsa 1 kg";
+                quantity.value = 1000;
+            }
+        } else {
+            document.getElementById("unitHelp").textContent =
+                "Ejemplo: botella de 1 litro = 1000 mililitros.";
+            fractionable.disabled = false;
+            if (name.value === "Unidad") {
+                name.value = "Botella 1 L";
+                quantity.value = 1000;
+            }
+        }
+    }
+
+    function formatStock(product) {
+
+        const unit = product.baseUnit || "UNIT";
+
+        if (unit === "UNIT") return product.stock + " unidades";
+        if (unit === "G") return product.stock + " g (" + (product.stock / 1000) + " kg)";
+
+        return product.stock + " ml (" + (product.stock / 1000) + " L)";
+    }
+
+    function renderProducts() {
+
+        const search = document.getElementById("search").value.toLowerCase();
+
+        const filtered = products.filter(p =>
+            p.code.toLowerCase().includes(search) ||
+            p.name.toLowerCase().includes(search)
+        );
+
+        Sisvet.renderTable("productsTable", filtered, [
+            { label: "Código", value: p => p.code },
+            { label: "Nombre", value: p => p.name },
+            { label: "Categoría", value: p => categories.find(c => c.id === p.categoryId)?.name },
+            { label: "Precio inicial", value: p => Sisvet.money(p.price) },
+            { label: "Stock físico", value: formatStock },
+            {
+                label: "Costo promedio base",
+                value: p => p.averageUnitCost == null
+                    ? "No disponible"
+                    : "S/ " + Number(p.averageUnitCost).toFixed(6) + " / " + p.baseUnit
+            }
+        ]);
+    }
+
+    async function loadPresentations() {
+
+        const productId = document.getElementById("presentationProductId").value;
+
+        if (!productId) return;
+
+        try {
+
+            const list = await Sisvet.api("/api/products/" + productId + "/presentations");
+
+            Sisvet.renderTable("presentationsTable", list, [
+                { label: "Presentación", value: p => p.name },
+                { label: "Equivalencia", value: p => p.quantityInBase },
+                { label: "Precio", value: p => Sisvet.money(p.salePrice) },
+                { label: "Fraccionable", value: p => p.fractionable ? "Sí" : "No" }
+            ]);
+
+        } catch (error) {
+            Sisvet.showError("presentationMessage", error);
+        }
+    }
+
+    async function loadProducts() {
+
+        try {
+
+            [products, categories] = await Promise.all([
+                Sisvet.api("/api/products"),
+                Sisvet.api("/api/products/categories")
+            ]);
+
+            const categorySelect = document.getElementById("categoryId");
+            categorySelect.replaceChildren();
+
+            for (const category of categories) {
+                categorySelect.add(new Option(category.name, category.id));
+            }
+
+            const productSelect = document.getElementById("presentationProductId");
+            const previous = productSelect.value;
+
+            productSelect.replaceChildren();
+
+            for (const product of products) {
+                productSelect.add(new Option(product.name, product.id));
+            }
+
+            if (products.some(p => String(p.id) === previous)) {
+                productSelect.value = previous;
+            }
+
+            renderProducts();
+            await loadPresentations();
+
+        } catch (error) {
+            Sisvet.showError("listMessage", error);
+        }
+    }
+
+    document.getElementById("productForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const request = {
+            code: document.getElementById("code").value.trim(),
+            name: document.getElementById("name").value.trim(),
+            categoryId: Number(document.getElementById("categoryId").value),
+            baseUnit: document.getElementById("baseUnit").value,
+            presentationName: document.getElementById("presentationName").value.trim(),
+            presentationQuantity: Number(document.getElementById("presentationQuantity").value),
+            price: Number(document.getElementById("price").value),
+            fractionable: document.getElementById("fractionable").checked
+        };
+
+        try {
+
+            await Sisvet.api("/api/products", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            event.target.reset();
+            updateUnitHelp();
+            await loadProducts();
+
+            Sisvet.message("formMessage", "Producto registrado correctamente.");
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    document.getElementById("presentationForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const productId = document.getElementById("presentationProductId").value;
+
+        const request = {
+            name: document.getElementById("newPresentationName").value.trim(),
+            quantityInBase: Number(document.getElementById("newPresentationQuantity").value),
+            salePrice: Number(document.getElementById("newPresentationPrice").value),
+            fractionable: document.getElementById("newPresentationFractionable").checked
+        };
+
+        try {
+
+            await Sisvet.api("/api/products/" + productId + "/presentations", {
+                method: "POST",
+                body: JSON.stringify(request)
+            });
+
+            event.target.reset();
+            await loadPresentations();
+
+            Sisvet.message("presentationMessage", "Presentación registrada.");
+
+        } catch (error) {
+            Sisvet.showError("presentationMessage", error);
+        }
+    });
+
+    document.getElementById("baseUnit").addEventListener("change", updateUnitHelp);
+    document.getElementById("search").addEventListener("input", renderProducts);
+    document.getElementById("presentationProductId").addEventListener("change", loadPresentations);
+
+    async function start() {
+
+        if (!await Sisvet.init("Productos")) return;
+
+        updateUnitHelp();
+        await loadProducts();
+    }
+
+    start();
+
+</script>
+</body>
+</html>

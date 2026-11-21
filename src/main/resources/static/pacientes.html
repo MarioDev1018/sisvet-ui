@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pacientes y ficha clínica | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/sisvet.css">
+</head>
+<body>
+<div class="layout">
+    <aside id="navigation"></aside>
+    <main class="content">
+        <header class="page-header">
+            <h1>Pacientes y ficha clínica</h1>
+            <p>Búsqueda por mascota o propietario, registro sin IDs manuales y expediente clínico integral.</p>
+        </header>
+
+        <section class="card">
+            <h3>Directorio de pacientes</h3>
+            <form id="petSearchForm" class="toolbar">
+                <div class="field" style="flex:1">
+                    <label>Buscar por nombre de mascota, propietario o DNI</label>
+                    <input id="petSearchInput" name="search" placeholder="Ej. Luna, Hernando o 12345678">
+                </div>
+                <button type="submit">Buscar</button>
+                <button type="button" id="showAllPetsBtn" class="secondary">Ver todos</button>
+                <button type="button" id="newPetToggleBtn" class="outline">+ Nueva mascota</button>
+            </form>
+
+            <div class="table-wrap">
+                <table id="patientsTable"></table>
+            </div>
+            <p id="patientListMessage" class="message"></p>
+        </section>
+
+        <section id="petFormCard" class="card" hidden>
+            <div class="dossier-header" style="margin-bottom:12px">
+                <h3 id="petFormTitle" style="margin:0">Registrar nueva mascota</h3>
+                <button type="button" id="closePetFormBtn" class="small secondary">Cerrar</button>
+            </div>
+            <div id="petFormRoleNotice" class="alert alert-warn" hidden></div>
+
+            <form id="petForm">
+                <input id="petIdInput" name="petId" type="hidden">
+                <div class="form-grid">
+                    <div class="field full">
+                        <label>Propietario (buscar y seleccionar)</label>
+                        <div class="picker-stack">
+                            <div class="picker-toolbar">
+                                <input id="ownerFilterInput" type="search" placeholder="Filtrar por nombre o documento...">
+                                <button type="button" id="toggleQuickOwnerBtn" class="outline">+ Nuevo propietario</button>
+                            </div>
+                            <select id="petOwnerId" name="ownerId" required></select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>Nombre de la mascota</label>
+                        <input id="petNameInput" name="name" maxlength="100" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Especie</label>
+                        <select id="petSpeciesSelect" name="species" required>
+                            <option value="CANINE">Perro (Canino)</option>
+                            <option value="FELINE">Gato (Felino)</option>
+                            <option value="OTHER">Otra especie</option>
+                        </select>
+                    </div>
+
+                    <div id="customSpeciesWrap" class="field" hidden>
+                        <label>Especificar especie</label>
+                        <input id="customSpeciesInput" maxlength="60" placeholder="Ej. Conejo, Ave">
+                    </div>
+
+                    <div class="field">
+                        <label>Raza</label>
+                        <input id="petBreedInput" name="breed" maxlength="60" placeholder="Ej. Mestizo, Labrador">
+                    </div>
+
+                    <div class="field">
+                        <label>Sexo</label>
+                        <select id="petSexSelect" name="sex">
+                            <option value="">No especificado</option>
+                            <option value="Macho">Macho</option>
+                            <option value="Hembra">Hembra</option>
+                        </select>
+                    </div>
+
+                    <div class="field">
+                        <label>Fecha de nacimiento (opcional si indica edad)</label>
+                        <input id="petBirthDateInput" name="birthDate" type="date">
+                    </div>
+
+                    <div class="field">
+                        <label>Edad estimada en meses (opcional)</label>
+                        <input id="petAgeMonthsInput" name="estimatedAgeMonths" type="number" min="0" placeholder="Ej. 24">
+                    </div>
+                </div>
+
+                <div class="actions">
+                    <button id="savePetBtn" type="submit">Guardar mascota</button>
+                    <button type="button" id="resetPetFormBtn" class="secondary">Limpiar</button>
+                </div>
+            </form>
+            <p id="petMessage" class="message"></p>
+
+            <div id="quickOwnerCard" class="inline-card" hidden>
+                <h4 style="margin-top:0">Registrar propietario rápido</h4>
+                <form id="quickOwnerForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label>Tipo de documento</label>
+                            <select name="documentType">
+                                <option value="DNI">DNI</option>
+                                <option value="RUC">RUC</option>
+                                <option value="CE">Carné de extranjería</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>Número de documento</label>
+                            <input name="documentNumber" maxlength="20" required>
+                        </div>
+                        <div class="field">
+                            <label>Nombre completo</label>
+                            <input name="fullName" maxlength="100" required>
+                        </div>
+                        <div class="field">
+                            <label>Teléfono</label>
+                            <input name="phone" maxlength="20">
+                        </div>
+                        <div class="field">
+                            <label>Correo</label>
+                            <input name="email" type="email">
+                        </div>
+                    </div>
+                    <div class="actions">
+                        <button type="submit">Guardar propietario y seleccionar</button>
+                        <button type="button" id="cancelQuickOwnerBtn" class="secondary">Cancelar</button>
+                    </div>
+                </form>
+                <p id="quickOwnerMessage" class="message"></p>
+            </div>
+        </section>
+
+        <section id="petDossierSection" class="card" hidden>
+            <div class="dossier-header">
+                <div>
+                    <h2 id="dossierPetName" style="margin:0 0 6px">Ficha clínica</h2>
+                    <div id="dossierBadges" class="table-actions"></div>
+                </div>
+                <div class="table-actions">
+                    <button type="button" id="dossierEditBtn" class="small outline">Editar datos</button>
+                    <a id="dossierArrivalLink" class="button-link" href="/atenciones.html">Registrar llegada / urgencia</a>
+                    <a id="dossierCareLink" class="button-link secondary" href="/consultas.html">Ir a atención clínica</a>
+                    <a id="dossierAgendaLink" class="button-link outline" href="/citas.html">Programar cita</a>
+                </div>
+            </div>
+
+            <div class="dossier-meta">
+                <div class="meta-box">
+                    <small>Propietario</small>
+                    <strong id="dossierOwner">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Contacto</small>
+                    <strong id="dossierContact">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Especie / Raza / Sexo</small>
+                    <strong id="dossierBio">-</strong>
+                </div>
+                <div class="meta-box">
+                    <small>Último peso registrado</small>
+                    <strong id="dossierWeight">-</strong>
+                </div>
+            </div>
+
+            <div id="dossierRoleNote" class="alert alert-info" hidden></div>
+
+            <div id="dossierTabs" class="tabs">
+                <button type="button" class="tab-btn active" data-tab="weights">Pesos</button>
+                <button type="button" class="tab-btn" data-tab="consultations">Consultas y diagnósticos</button>
+                <button type="button" class="tab-btn" data-tab="treatments">Tratamientos y procedimientos</button>
+                <button type="button" class="tab-btn" data-tab="vaccinations">Vacunación</button>
+                <button type="button" class="tab-btn" data-tab="agenda">Citas y seguimientos</button>
+            </div>
+
+            <div id="dossierPanelWeights">
+                <div class="table-wrap"><table id="dossierWeightTable"></table></div>
+            </div>
+            <div id="dossierPanelConsultations" hidden>
+                <h4>Consultas médicas</h4>
+                <div class="table-wrap"><table id="dossierConsultationsTable"></table></div>
+                <h4>Diagnósticos e indicaciones</h4>
+                <div class="table-wrap"><table id="dossierDiagnosesTable"></table></div>
+            </div>
+            <div id="dossierPanelTreatments" hidden>
+                <h4>Tratamientos prescritos</h4>
+                <div class="table-wrap"><table id="dossierTreatmentsTable"></table></div>
+                <h4>Procedimientos clínicos</h4>
+                <div class="table-wrap"><table id="dossierProceduresTable"></table></div>
+                <h4>Derivaciones</h4>
+                <div class="table-wrap"><table id="dossierReferralsTable"></table></div>
+            </div>
+            <div id="dossierPanelVaccinations" hidden>
+                <div class="table-wrap"><table id="dossierVaccinationsTable"></table></div>
+            </div>
+            <div id="dossierPanelAgenda" hidden>
+                <h4>Citas registradas</h4>
+                <div class="table-wrap"><table id="dossierAppointmentsTable"></table></div>
+                <h4>Seguimientos</h4>
+                <div class="table-wrap"><table id="dossierFollowUpsTable"></table></div>
+            </div>
+        </section>
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script src="/js/clinical.js"></script>
+<script>Clinical.start("patients");</script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Usuarios | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Gestión de usuarios</h1>
+            <p>Administración de cuentas y roles del sistema.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Registrar o modificar usuario</h3>
+
+            <form id="userForm">
+
+                <input type="hidden" id="userId">
+
+                <div class="form-grid">
+
+                    <div class="field">
+                        <label>Nombre completo</label>
+                        <input id="fullName" maxlength="100" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Nombre de usuario</label>
+                        <input id="username" maxlength="50" required>
+                    </div>
+
+                    <div class="field">
+                        <label>Contraseña</label>
+                        <input id="password" type="password" autocomplete="new-password">
+                    </div>
+
+                    <div class="field">
+                        <label>Rol</label>
+                        <select id="roleId" required></select>
+                    </div>
+
+                </div>
+
+                <div class="actions">
+                    <button type="submit">Guardar usuario</button>
+                    <button type="button" class="secondary" id="newButton">Nuevo</button>
+                    <button type="button" class="danger" id="deactivateButton">
+                        Desactivar seleccionado
+                    </button>
+                </div>
+
+            </form>
+
+            <p id="formMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Usuarios registrados</h3>
+
+            <div class="field">
+                <label>Seleccionar usuario para modificar</label>
+                <select id="userSelection"></select>
+            </div>
+
+            <div class="table-wrap">
+                <table id="usersTable"></table>
+            </div>
+
+            <p id="listMessage" class="message"></p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    let registeredUsers = [];
+
+    async function loadUsers() {
+
+        try {
+
+            const [users, roles] = await Promise.all([
+                Sisvet.api("/api/users"),
+                Sisvet.api("/api/users/roles")
+            ]);
+
+            registeredUsers = users;
+
+            const roleSelect = document.getElementById("roleId");
+            roleSelect.replaceChildren();
+
+            for (const role of roles) {
+                roleSelect.add(new Option(role.name, role.id));
+            }
+
+            const selection = document.getElementById("userSelection");
+            selection.replaceChildren();
+            selection.add(new Option("Seleccionar...", ""));
+
+            for (const user of users) {
+                selection.add(new Option(user.fullName + " (" + user.username + ")", user.id));
+            }
+
+            Sisvet.renderTable("usersTable", users, [
+                { label: "ID", value: u => u.id },
+                { label: "Nombre", value: u => u.fullName },
+                { label: "Usuario", value: u => u.username },
+                { label: "Rol", value: u => u.role?.name },
+                { label: "Estado", value: u => u.active ? "Activo" : "Inactivo" }
+            ]);
+
+        } catch (error) {
+            Sisvet.showError("listMessage", error);
+        }
+    }
+
+    function clearForm() {
+
+        document.getElementById("userForm").reset();
+        document.getElementById("userId").value = "";
+        document.getElementById("userSelection").value = "";
+
+        Sisvet.message("formMessage", "");
+    }
+
+    document.getElementById("userSelection").addEventListener("change", function() {
+
+        const user = registeredUsers.find(u => String(u.id) === this.value);
+
+        if (!user) {
+            clearForm();
+            return;
+        }
+
+        document.getElementById("userId").value = user.id;
+        document.getElementById("fullName").value = user.fullName;
+        document.getElementById("username").value = user.username;
+        document.getElementById("password").value = "";
+        document.getElementById("roleId").value = user.role?.id ?? "";
+
+        Sisvet.message("formMessage", "Modificando usuario: " + user.username);
+    });
+
+    document.getElementById("newButton").addEventListener("click", clearForm);
+
+    document.getElementById("userForm").addEventListener("submit", async event => {
+
+        event.preventDefault();
+
+        const userId = document.getElementById("userId").value;
+
+        const request = {
+            fullName: document.getElementById("fullName").value.trim(),
+            username: document.getElementById("username").value.trim(),
+            password: document.getElementById("password").value,
+            roleId: Number(document.getElementById("roleId").value)
+        };
+
+        if (!userId && !request.password) {
+            Sisvet.message("formMessage", "La contraseña es obligatoria para un usuario nuevo.", true);
+            return;
+        }
+
+        try {
+
+            await Sisvet.api(userId ? "/api/users/" + userId : "/api/users", {
+                method: userId ? "PUT" : "POST",
+                body: JSON.stringify(request)
+            });
+
+            clearForm();
+            await loadUsers();
+
+            Sisvet.message("formMessage", "Usuario guardado correctamente.");
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    document.getElementById("deactivateButton").addEventListener("click", async () => {
+
+        const userId = document.getElementById("userId").value;
+
+        if (!userId) {
+            Sisvet.message("formMessage", "Selecciona un usuario.", true);
+            return;
+        }
+
+        if (!confirm("¿Desactivar esta cuenta?")) return;
+
+        try {
+
+            await Sisvet.api("/api/users/" + userId + "/deactivate", {
+                method: "PATCH"
+            });
+
+            clearForm();
+            await loadUsers();
+
+            Sisvet.message("formMessage", "Cuenta desactivada.");
+
+        } catch (error) {
+            Sisvet.showError("formMessage", error);
+        }
+    });
+
+    async function start() {
+        if (!await Sisvet.init("Usuarios")) return;
+        await loadUsers();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>

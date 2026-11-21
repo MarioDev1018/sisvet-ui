@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventario | SISVET-CLINIC</title>
+    <link rel="stylesheet" href="/css/global.css">
+    <link rel="stylesheet" href="/css/layout.css">
+</head>
+<body>
+
+<div class="layout">
+    <aside id="navigation"></aside>
+
+    <main class="content">
+
+        <header class="page-header">
+            <h1>Control de inventario</h1>
+            <p>Existencias actuales y productos con bajo stock.</p>
+        </header>
+
+        <section class="card">
+
+            <h3>Consultar alertas</h3>
+
+            <div class="toolbar">
+
+                <div class="field">
+                    <label>Umbral máximo de unidades</label>
+                    <input id="threshold" type="number" min="0" value="5">
+                </div>
+
+                <button id="searchButton">Consultar inventario</button>
+
+            </div>
+
+            <div class="table-wrap">
+                <table id="inventoryTable"></table>
+            </div>
+
+            <p id="inventoryMessage" class="message"></p>
+
+        </section>
+
+        <section class="card">
+
+            <h3>Indicadores</h3>
+
+            <p id="productCount">Productos consultados: 0</p>
+            <p id="lowStockCount">Productos con bajo stock: 0</p>
+
+        </section>
+
+    </main>
+</div>
+
+<script src="/js/sisvet.js"></script>
+<script>
+
+    async function loadInventory() {
+
+        const threshold = Number(document.getElementById("threshold").value);
+
+        if (!Number.isInteger(threshold) || threshold < 0) {
+            Sisvet.message("inventoryMessage", "El umbral debe ser un entero no negativo.", true);
+            return;
+        }
+
+        try {
+
+            const [products, lowStock] = await Promise.all([
+                Sisvet.api("/api/products"),
+                Sisvet.api("/api/reports/low-stock?threshold=" + threshold)
+            ]);
+
+            Sisvet.renderTable("inventoryTable", products, [
+                { label: "Código", value: p => p.code },
+                { label: "Producto", value: p => p.name },
+                { label: "Precio inicial", value: p => Sisvet.money(p.price) },
+                {
+                    label: "Stock físico",
+                    value: p => {
+                        if (p.baseUnit === "G") {
+                            return p.stock + " g (" + p.stock / 1000 + " kg)";
+                        }
+
+                        if (p.baseUnit === "ML") {
+                            return p.stock + " ml (" + p.stock / 1000 + " L)";
+                        }
+
+                        return p.stock + " unidades";
+                    }
+                },
+                {
+                    label: "Costo promedio",
+                    value: p => p.averageUnitCost == null
+                        ? "No disponible"
+                        : "S/ " + Number(p.averageUnitCost).toFixed(6) + " / " + p.baseUnit
+                }
+            ]);
+
+            document.getElementById("productCount").textContent =
+                "Productos consultados: " + products.length;
+
+            document.getElementById("lowStockCount").textContent =
+                "Productos con bajo stock: " + lowStock.length;
+
+            Sisvet.message("inventoryMessage", "Consulta actualizada.");
+
+        } catch (error) {
+            Sisvet.showError("inventoryMessage", error);
+        }
+    }
+
+    document.getElementById("searchButton").addEventListener("click", loadInventory);
+
+    async function start() {
+
+        if (!await Sisvet.init("Inventario")) return;
+
+        await loadInventory();
+    }
+
+    start();
+
+</script>
+
+</body>
+</html>
